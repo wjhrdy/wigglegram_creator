@@ -13,18 +13,12 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: create_wiggle
-            icon: icons/icon-512.png
-            options: --noconsole --onefile --icon=icons/icon-512.png
             spec: specs/linux.spec
           - os: windows-latest
             artifact_name: create_wiggle.exe
-            icon: icons/icon_512_tIf_icon.ico
-            options: --noconsole --onefile --icon=icons/icon_512_tIf_icon.ico
             spec: specs/windows.spec
           - os: macos-latest
             artifact_name: WigglegramCreator.app.zip
-            icon: icons/icon-512.png
-            options: --windowed --name "WigglegramCreator" --icon=icons/icon.icns
             spec: specs/macos.spec
 
     steps:
@@ -45,7 +39,6 @@ jobs:
         with:
           python_ver: '3.12'
           requirements: 'requirements.txt'
-          options: ${{ matrix.options }}
           upload_exe_with_name: ${{ matrix.artifact_name }}
           spec: ${{ matrix.spec }}
 
