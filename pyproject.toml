@@ -2,17 +2,22 @@
 name = "wigglegram_creator"
 version = "0.1.0"
 description = "Wigglegram creator for Mac"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 authors = [
     { name = "Willy Hardy", email = "nuptials.secrecy554@4wrd.cc" }
 ]
 
 dependencies = [
     "imageio-ffmpeg",
-    "pyinstaller",
     "Pillow",
     "PySide6",
     "imageio",
     "scikit-image",
     "numpy"
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller"
+]
+
