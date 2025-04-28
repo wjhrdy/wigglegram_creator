@@ -27,15 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv (all platforms)
+      - name: Set up Python venv and install dependencies
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          uv pip install -r requirements.txt --system
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+        shell: bash
 
       - name: Build executable
         uses: sayyid5416/pyinstaller@v1
