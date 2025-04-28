@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon-512.png" alt="Wigglegram Creator Icon" width="128" height="128"/>
+  <img src="icons/icon-512.png" alt="Wigglegram Creator Icon" width="128" height="128"/>
 </p>
 
 # Wigglegram Creator

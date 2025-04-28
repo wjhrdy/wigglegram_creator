@@ -30,9 +30,9 @@ jobs:
         run: |
           pip install pyinstaller
           if [ "$RUNNER_OS" = "Windows" ]; then
-            pyinstaller --noconsole --onefile --icon=icon_512_tIf_icon.ico create_wiggle.py
+            pyinstaller --noconsole --onefile --icon=icons/icon-512.png create_wiggle.py
           else
-            pyinstaller --noconsole --onefile --icon=icon-512.png create_wiggle.py
+            pyinstaller --noconsole --onefile --icon=icons/icon-512.png create_wiggle.py
           fi
       - name: Archive binaries
         uses: actions/upload-artifact@v4
