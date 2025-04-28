@@ -42,6 +42,13 @@ jobs:
           upload_exe_with_name: ${{ matrix.artifact_name }}
           spec: ${{ matrix.spec }}
 
+      - name: Zip build output (Linux/Windows)
+        if: matrix.os != 'macos-latest'
+        run: |
+          cd dist
+          zip -r ${{ matrix.artifact_name }} ${artifact_name%.*}
+        shell: bash
+
       - name: Zip macOS .app bundle
         if: matrix.os == 'macos-latest'
         run: |

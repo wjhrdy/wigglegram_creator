@@ -30,14 +30,5 @@ exe = EXE(
     upx=True,
     console=False,
     icon='icons/icon_512_tIf_icon.ico',
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='create_wiggle'
+    onefile=True,
 )
