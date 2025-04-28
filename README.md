@@ -51,7 +51,12 @@ Prebuilt binaries for Windows, Linux, and macOS (x86_64 and arm64) are available
 
 ### Manual Build (Advanced)
 If you want to build the app yourself:
-1. **Ensure you have PyInstaller and dependencies installed:**
+1. **(Recommended) Set up your environment with [uv](https://github.com/astral-sh/uv):**
+   ```sh
+   uv sync
+   ```
+
+   **Or, with pip:**
    ```sh
    pip install -r requirements.txt
    pip install pyinstaller
@@ -59,17 +64,15 @@ If you want to build the app yourself:
 2. **Build the app:**
    - **Windows:**
      ```sh
-     pyinstaller --noconsole --onefile --icon=icons/icon_512_tIf_icon.ico create_wiggle.py
+     pyinstaller specs/windows.spec
      ```
    - **macOS:**
      ```sh
-     pyinstaller --windowed --name "WigglegramCreator" --icon=icons/icon.icns create_wiggle.py
-     cd dist
-     zip -r WigglegramCreator.zip WigglegramCreator.app
+     pyinstaller specs/macos.spec
      ```
    - **Linux:**
      ```sh
-     pyinstaller --noconsole --onefile --icon=icons/icon-512.png create_wiggle.py
+     pyinstaller specs/linux.spec
      ```
    The executable or bundle will be created in the `dist/` folder.
 
@@ -82,6 +85,10 @@ If you want to build the app yourself:
 
 ## GitHub Actions
 Binaries for all supported platforms are automatically built and uploaded to each release using GitHub Actions.
+
+## TODO
+- fix automated build of executable
+- fix custom alignment logic
 
 ## License
 MIT
