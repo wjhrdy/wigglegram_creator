@@ -7,7 +7,6 @@ on:
 
 jobs:
   build:
-    timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -53,30 +52,6 @@ jobs:
           cd dist
           zip ${{ matrix.artifact_name }} ${artifact_name%.*}
         shell: bash
-
-      - name: Clean up old build artifacts (macOS only)
-        if: matrix.os == 'macos-latest'
-        run: |
-          rm -rf build dist
-
-      - name: Show disk usage before build (macOS only)
-        if: matrix.os == 'macos-latest'
-        run: |
-          df -h
-          du -sh *
-
-      - name: Time the build (macOS only)
-        if: matrix.os == 'macos-latest'
-        run: |
-          time pyinstaller --windowed --name "WigglegramCreator" --icon=icons/icon.icns create_wiggle.py
-
-      - name: Show disk usage after build (macOS only)
-        if: matrix.os == 'macos-latest'
-        run: |
-          df -h
-          du -sh *
-          find dist | wc -l
-          find build | wc -l
 
       - name: Zip macOS .app bundle
         if: matrix.os == 'macos-latest'
