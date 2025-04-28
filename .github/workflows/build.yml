@@ -36,20 +36,33 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            arch: x64
             TARGET: macos
             CMD_BUILD: >
                 pip install pyinstaller && \
-                pyinstaller --windowed --name "WigglegramCreator-${{ matrix.arch }}" --icon=icons/icon-512.png create_wiggle.py && \
+                pyinstaller --windowed --name "WigglegramCreator-x64" --icon=icons/icon-512.png create_wiggle.py && \
                 cd dist/ && \
-                zip -r9 WigglegramCreator-${{ matrix.arch }} WigglegramCreator-${{ matrix.arch }}.app/
-            OUT_FILE_NAME: WigglegramCreator-${{ matrix.arch }}.zip
+                zip -r9 WigglegramCreator-x64 WigglegramCreator-x64.app/
+            OUT_FILE_NAME: WigglegramCreator-x64.zip
+            ASSET_MIME: application/zip
+          - os: macos-latest
+            arch: arm64
+            TARGET: macos
+            CMD_BUILD: >
+                pip install pyinstaller && \
+                pyinstaller --windowed --name "WigglegramCreator-arm64" --icon=icons/icon-512.png create_wiggle.py && \
+                cd dist/ && \
+                zip -r9 WigglegramCreator-arm64 WigglegramCreator-arm64.app/
+            OUT_FILE_NAME: WigglegramCreator-arm64.zip
             ASSET_MIME: application/zip
           - os: windows-latest
+            arch: x64
             TARGET: windows
             CMD_BUILD: pip install pyinstaller && pyinstaller --noconsole --onefile --icon=icons/icon_512_tIf_icon.ico create_wiggle.py
             OUT_FILE_NAME: create_wiggle.exe
             ASSET_MIME: application/vnd.microsoft.portable-executable
           - os: ubuntu-latest
+            arch: x64
             TARGET: linux
             CMD_BUILD: pip install pyinstaller && pyinstaller --noconsole --onefile --icon=icons/icon-512.png create_wiggle.py
             OUT_FILE_NAME: create_wiggle
