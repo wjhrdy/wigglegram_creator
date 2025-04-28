@@ -46,7 +46,7 @@ jobs:
         if: matrix.os != 'macos-latest'
         run: |
           cd dist
-          zip -r ${{ matrix.artifact_name }} ${artifact_name%.*}
+          zip ${{ matrix.artifact_name }} ${artifact_name%.*}
         shell: bash
 
       - name: Zip macOS .app bundle
