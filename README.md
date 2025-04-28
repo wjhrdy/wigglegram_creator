@@ -63,7 +63,7 @@ If you want to build the app yourself:
      ```
    - **macOS:**
      ```sh
-     pyinstaller --windowed --name "WigglegramCreator" --icon=icons/icon-512.png create_wiggle.py
+     pyinstaller --windowed --name "WigglegramCreator" --icon=icons/icon.icns create_wiggle.py
      cd dist
      zip -r WigglegramCreator.zip WigglegramCreator.app
      ```
