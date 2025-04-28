@@ -42,6 +42,10 @@ jobs:
           upload_exe_with_name: ${{ matrix.artifact_name }}
           spec: ${{ matrix.spec }}
 
+      - name: List build output directory
+        run: |
+          ls -lR dist
+
       - name: Zip build output (Linux/Windows)
         if: matrix.os != 'macos-latest'
         run: |

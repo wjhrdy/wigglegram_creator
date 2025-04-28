@@ -29,6 +29,5 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='icons/icon-512.png',
     onefile=True,
 )
