@@ -3,7 +3,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['create_wiggle.py'],
+    ['../create_wiggle.py'],
     pathex=[],
     binaries=[],
     datas=[],
