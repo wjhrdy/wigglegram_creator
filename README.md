@@ -32,19 +32,46 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
    python create_wiggle.py
    ```
 
-## Building Standalone Binaries
-Prebuilt binaries for Windows, Linux, and macOS (x86_64 and arm64) are available from the [GitHub Releases](https://github.com/nallic/wigglegram_creator/releases) page.
+## Releases & Building
 
-To build your own:
-1. **Ensure you have PyInstaller installed:**
+Prebuilt binaries for Windows, Linux, and macOS (x86_64 and arm64) are available from the [GitHub Releases](https://github.com/nallic/wigglegram_creator/releases) page. 
+
+### Automated Releases (Best Practice)
+- Binaries are automatically built and uploaded to each GitHub Release using GitHub Actions.
+- **Triggering a Release Build:**
+  1. Bump your version and commit your changes.
+  2. Tag your commit with a version tag (e.g., `v1.2.3`):
+     ```sh
+     git tag v1.2.3
+     git push origin v1.2.3
+     ```
+  3. GitHub Actions will build and upload binaries for all platforms to the new release.
+- Each platform uses the appropriate icon and packaging format (see `.github/workflows/build.yml`).
+- All dependencies for building are managed via `requirements.txt`.
+
+### Manual Build (Advanced)
+If you want to build the app yourself:
+1. **Ensure you have PyInstaller and dependencies installed:**
    ```sh
+   pip install -r requirements.txt
    pip install pyinstaller
    ```
 2. **Build the app:**
-   ```sh
-   pyinstaller --noconsole --onefile create_wiggle.py
-   ```
-   The executable will be created in the `dist/` folder.
+   - **Windows:**
+     ```sh
+     pyinstaller --noconsole --onefile --icon=icons/icon_512_tIf_icon.ico create_wiggle.py
+     ```
+   - **macOS:**
+     ```sh
+     pyinstaller --windowed --name "WigglegramCreator" --icon=icons/icon-512.png create_wiggle.py
+     cd dist
+     zip -r WigglegramCreator.zip WigglegramCreator.app
+     ```
+   - **Linux:**
+     ```sh
+     pyinstaller --noconsole --onefile --icon=icons/icon-512.png create_wiggle.py
+     ```
+   The executable or bundle will be created in the `dist/` folder.
 
 ## Usage
 - **Drag and drop** one or more images (JPG/PNG) onto the app window.

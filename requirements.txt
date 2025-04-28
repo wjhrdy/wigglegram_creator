@@ -1,0 +1,7 @@
+imageio-ffmpeg
+pyinstaller
+Pillow
+PySide6
+imageio
+scikit-image
+numpy
