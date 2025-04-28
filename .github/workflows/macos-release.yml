@@ -26,17 +26,13 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          uv pip install .
-
-      - name: Install PyInstaller
-        run: |
-          uv pip install pyinstaller
+          uv pip install . --system
 
       - name: Build macOS app with PyInstaller
         run: |
           # Set ARCHFLAGS to build for the selected architecture
           export ARCHFLAGS="-arch ${{ matrix.arch }}"
-          pyinstaller --windowed --name "WigglegramCreator-${{ matrix.arch }}" --icon=icon.icns create_wiggle.py
+          pyinstaller --windowed --name "WigglegramCreator-${{ matrix.arch }}" --icon=icons/icon-512.png create_wiggle.py
 
       - name: Archive app for release
         run: |
