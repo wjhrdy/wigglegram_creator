@@ -29,7 +29,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='icons/icon.icns',
+    icon='../icons/icon.icns',
 )
 coll = COLLECT(
     exe,
@@ -44,6 +44,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Wigglegram Creator.app',
-    icon='icon.icns',
+    icon='../icons/icon.icns',
     bundle_identifier=None,
 )
