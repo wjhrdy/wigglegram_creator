@@ -335,6 +335,12 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
 
     # Open the image
     image = Image.open(input_path)
+    
+    # Get output parameters from image attributes if available
+    output_resolution = getattr(image, 'output_resolution', "1920×1080")
+    output_fps = getattr(image, 'output_fps', 8.0)
+    
+    print(f"[slice_and_create_gif] Using output resolution: {output_resolution}, fps: {output_fps}")
 
     # Get the width and height of the image
     width, height = image.size
@@ -521,9 +527,46 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     cropped_frames = crop_images(aligned_frames, 200)
     print(f"Number of frames after cropping: {len(cropped_frames)}")
 
-    # Downscale for GIF and WebM
-    gif_frames = [scale_image(image, 0.2) for image in cropped_frames]
-    webm_frames = [scale_image(image, 0.4) for image in cropped_frames]  # WebM at 2x GIF size
+    # Get output resolution from image attribute if available
+    output_resolution = getattr(image, 'output_resolution', "1920×1080")
+    
+    # Parse the resolution string to get the target height
+    try:
+        resolution_parts = output_resolution.split('×')
+        if len(resolution_parts) == 2:
+            target_height = int(resolution_parts[0])  # Use the first number (shorter dimension)
+        else:
+            target_height = 1080  # Default to 1080p if parsing fails
+    except:
+        target_height = 1080  # Default to 1080p if parsing fails
+    
+    # Calculate scaling factor based on the first frame's height
+    if cropped_frames and len(cropped_frames) > 0:
+        first_frame = cropped_frames[0]
+        original_height = first_frame.height
+        scale_factor = target_height / original_height
+        print(f"Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
+        
+        # Scale frames to the target resolution
+        mp4_frames = [scale_image(image, scale_factor) for image in cropped_frames]  # MP4 at full resolution
+        gif_frames = [scale_image(image, scale_factor * 0.5) for image in cropped_frames]  # GIF at half resolution
+        webm_frames = [scale_image(image, scale_factor) for image in cropped_frames]  # WebM at full resolution
+        
+        # Report the actual output resolutions
+        if mp4_frames and len(mp4_frames) > 0:
+            mp4_width, mp4_height = mp4_frames[0].size
+            print(f"MP4 resolution: {mp4_width}×{mp4_height}")
+        if gif_frames and len(gif_frames) > 0:
+            gif_width, gif_height = gif_frames[0].size
+            print(f"GIF resolution: {gif_width}×{gif_height}")
+        if webm_frames and len(webm_frames) > 0:
+            webm_width, webm_height = webm_frames[0].size
+            print(f"WebM resolution: {webm_width}×{webm_height}")
+    else:
+        # Fallback to old behavior if no frames
+        mp4_frames = cropped_frames
+        gif_frames = [scale_image(image, 0.2) for image in cropped_frames]
+        webm_frames = [scale_image(image, 0.4) for image in cropped_frames]
 
     # Create pingpong sequence for any number of frames
     def make_pingpong(seq, pingpong_mode=True):
@@ -550,9 +593,14 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     pingpong_mode = getattr(image, 'pingpong_mode', True)
     
     gif_seq = make_pingpong(gif_frames, pingpong_mode)
-    imageio.mimsave(output_gif_path, gif_seq, duration=3, loop=0)  # Adjust the duration as needed
+    # Get frame rate from image attribute if available, default to 8 fps
+    fps = getattr(image, 'output_fps', 8.0)
+    # Convert fps to duration (in seconds) for GIF
+    duration = 1.0 / fps
+    
+    imageio.mimsave(output_gif_path, gif_seq, duration=duration, loop=0)
 
-    mp4_seq = make_pingpong(cropped_frames, pingpong_mode)
+    mp4_seq = make_pingpong(mp4_frames, pingpong_mode)
     webm_seq = make_pingpong(webm_frames, pingpong_mode)
     pingpong_frames = mp4_seq * 10  # Repeat 10 times
 
@@ -569,7 +617,9 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         return arr
     success = False
     try:
-        with imageio.get_writer(mp4_path, fps=24, codec='libx264', quality=8, format='ffmpeg') as writer:
+        # Get frame rate from image attribute if available, default to 8 fps
+        fps = getattr(image, 'output_fps', 8.0)
+        with imageio.get_writer(mp4_path, fps=fps, codec='libx264', quality=8, format='ffmpeg') as writer:
             for frame in pingpong_frames:
                 writer.append_data(ensure_rgb_uint8(frame))
         success = True
@@ -577,7 +627,9 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         print(f"libx264 failed: {e}\nTrying mpeg4 fallback...")
     if not success:
         try:
-            with imageio.get_writer(mp4_path, fps=24, codec='mpeg4', quality=8, format='ffmpeg') as writer:
+            # Get frame rate from image attribute if available, default to 8 fps
+            fps = getattr(image, 'output_fps', 8.0)
+            with imageio.get_writer(mp4_path, fps=fps, codec='mpeg4', quality=8, format='ffmpeg') as writer:
                 for frame in pingpong_frames:
                     writer.append_data(ensure_rgb_uint8(frame))
             success = True
@@ -591,7 +643,9 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     webm_pingpong_frames = webm_seq * 10  # Repeat 10 times
     webm_success = False
     try:
-        with imageio.get_writer(webm_path, fps=24, codec='vp9', quality=8, format='ffmpeg') as writer:
+        # Get frame rate from image attribute if available, default to 8 fps
+        fps = getattr(image, 'output_fps', 8.0)
+        with imageio.get_writer(webm_path, fps=fps, codec='vp9', quality=8, format='ffmpeg') as writer:
             for frame in webm_pingpong_frames:
                 writer.append_data(ensure_rgb_uint8(frame))
         webm_success = True
@@ -599,7 +653,9 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         print(f"vp9 failed: {e}\nTrying vp8 fallback...")
     if not webm_success:
         try:
-            with imageio.get_writer(webm_path, fps=24, codec='vp8', quality=8, format='ffmpeg') as writer:
+            # Get frame rate from image attribute if available, default to 8 fps
+            fps = getattr(image, 'output_fps', 8.0)
+            with imageio.get_writer(webm_path, fps=fps, codec='vp8', quality=8, format='ffmpeg') as writer:
                 for frame in webm_pingpong_frames:
                     writer.append_data(ensure_rgb_uint8(frame))
             webm_success = True
@@ -661,7 +717,7 @@ class DropLabel(QLabel):
         self.button_layout = button_layout
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setText("Drag and drop images here")
+        self.setText("Drag and drop one or more images here")
         self.setMinimumSize(400, 300)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("QLabel { background-color: #f0f0f0; border: 2px dashed #cccccc; }")
@@ -692,6 +748,11 @@ class DropLabel(QLabel):
         self.expanded_grid_start_cell = (0, 0)
         self.expanded_grid_end_cell = (0, 0)
         self.webm_button = None
+        
+        # Output parameters
+        self.output_resolution = "1920×1080"  # Default to 1080p
+        self.output_fps = 8.0  # Default to 8 fps
+        self.original_resolution = None  # Will store the original resolution for reference
 
         # Set up animation timer
         self.animation_timer = QTimer()
@@ -703,6 +764,12 @@ class DropLabel(QLabel):
         self.alignment_sigma_spinbox = None
         if button_layout:
             self.setup_buttons_and_controls()
+            
+            # Connect resolution and fps combo boxes to update method
+            if hasattr(self, 'resolution_combo'):
+                self.resolution_combo.currentIndexChanged.connect(self.update_output_parameters)
+            if hasattr(self, 'fps_combo'):
+                self.fps_combo.currentIndexChanged.connect(self.update_output_parameters)
 
     def slice_image(self):
         """Slices the loaded image into vertical slices based on FFT-determined period in the x direction or user override."""
@@ -772,7 +839,7 @@ class DropLabel(QLabel):
             return
             
         # Create a horizontal layout for the Gaussian parameters
-        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QGroupBox, QDoubleSpinBox
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QGroupBox, QDoubleSpinBox, QComboBox
         
         # Create a group box for alignment parameters
         align_group = QGroupBox("Alignment Parameters")
@@ -823,6 +890,67 @@ class DropLabel(QLabel):
         
         # Add the alignment group to the main button layout
         self.button_layout.addWidget(align_group)
+        
+        # Create a group box for output parameters
+        output_group = QGroupBox("Output Parameters")
+        output_layout = QVBoxLayout()
+        output_group.setLayout(output_layout)
+        
+        # Create a row for resolution selection
+        resolution_row = QHBoxLayout()
+        self.resolution_label = QLabel("Resolution:")
+        self.resolution_combo = QComboBox()
+        
+        # Add resolution options
+        self.resolution_options = [
+            "640×480 (SD NTSC)",
+            "768×576 (SD PAL)",
+            "1280×720 (HD)",
+            "1920×1080 (FHD)",
+            "3840×2160 (4K)",
+            "7680×4320 (8K)"
+        ]
+        self.resolution_combo.addItems(self.resolution_options)
+        
+        # Set default to 1080p
+        self.resolution_combo.setCurrentIndex(3)  # 1920×1080 (FHD)
+        self.resolution_combo.setToolTip("Select output resolution (shorter dimension)")
+        resolution_row.addWidget(self.resolution_label)
+        resolution_row.addWidget(self.resolution_combo)
+        
+        # Create a row for frame rate selection
+        fps_row = QHBoxLayout()
+        self.fps_label = QLabel("Frame Rate:")
+        self.fps_combo = QComboBox()
+        
+        # Add frame rate options
+        self.fps_options = [
+            "8 (Original)",
+            "23.976",
+            "24",
+            "25",
+            "29.97",
+            "30",
+            "50",
+            "59.94",
+            "60",
+            "90",
+            "120"
+        ]
+        self.fps_combo.addItems(self.fps_options)
+        
+        # Set default to 8 fps
+        self.fps_combo.setCurrentIndex(0)  # 8 fps
+        self.fps_combo.setToolTip("Select output frame rate (fps)")
+        fps_row.addWidget(self.fps_label)
+        fps_row.addWidget(self.fps_combo)
+        
+        # Add rows to the output layout
+        output_layout.addLayout(resolution_row)
+        output_layout.addLayout(fps_row)
+        
+        # Add the output group to the main button layout
+        self.button_layout.addWidget(output_group)
         
         # Add a button to toggle alignment visualization
         self.show_alignment_button = QPushButton("Show Alignment Debug")
@@ -970,7 +1098,10 @@ class DropLabel(QLabel):
         self.current_frame_idx = 0
         if self.qpixmaps:
             self.setPixmap(self.qpixmaps[0])
-        self.animation_timer.start(125)  # ~8 fps
+        # Calculate timer interval based on selected fps
+        fps = self.get_selected_fps()
+        interval = int(1000 / fps)  # Convert fps to milliseconds
+        self.animation_timer.start(interval)
 
     def prepare_animation_frames(self):
         """Prepares scaled QPixmap frames for animation, using pingpong or forward-only mode."""
@@ -1038,10 +1169,59 @@ class DropLabel(QLabel):
                 self.setPixmap(self.qpixmaps[self.current_frame_idx % len(self.qpixmaps)])
 
     def dragEnterEvent(self, event):
+        # Accept drag events that contain URLs (file paths)
+        # This allows for both single and multiple file drops
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def combine_images_horizontally(self, image_paths):
+        """
+        Combine multiple images horizontally. All images must have the same height.
+        
+        Parameters:
+        - image_paths: List of paths to image files
+        
+        Returns:
+        - combined_image: A single PIL Image with all images stacked horizontally
+        - None: If images have different heights or loading fails
+        """
+        if not image_paths:
+            return None
+            
+        # Load all images
+        images = []
+        for path in image_paths:
+            try:
+                img = Image.open(path)
+                images.append(img)
+            except Exception as e:
+                print(f"Error loading image {path}: {e}")
+                
+        if not images:
+            return None
+            
+        # Check if all images have the same height
+        first_height = images[0].height
+        for i, img in enumerate(images):
+            if img.height != first_height:
+                print(f"Error: Image {image_paths[i]} has height {img.height}, but expected {first_height}")
+                return None
+                
+        # Calculate the total width
+        total_width = sum(img.width for img in images)
+        
+        # Create a new image with the combined width and common height
+        combined_image = Image.new('RGB', (total_width, first_height))
+        
+        # Paste each image side by side
+        x_offset = 0
+        for img in images:
+            combined_image.paste(img, (x_offset, 0))
+            x_offset += img.width
+            
+        return combined_image
 
     def dropEvent(self, event):
         urls = event.mimeData().urls()
@@ -1049,29 +1229,85 @@ class DropLabel(QLabel):
             print("[dropEvent] No URLs found in drop event.")
             return
 
-        path = urls[0].toLocalFile()
-        print(f"[dropEvent] Loading: {os.path.basename(path)}")
-        self.update_status(f"Loading: {os.path.basename(path)}...")
-        QApplication.processEvents() # Update UI immediately
-
+        # Get all file paths from the drop event
         try:
-            self.image = Image.open(path)
-            self.current_path = path
+            paths = [url.toLocalFile() for url in urls]
+            
+            # Sort paths by filename
+            paths.sort(key=lambda p: os.path.basename(p))
+            
+            if len(paths) == 1:
+                # Single file case - process normally
+                path = paths[0]
+                print(f"[dropEvent] Loading single file: {os.path.basename(path)}")
+                self.update_status(f"Loading: {os.path.basename(path)}...")
+                QApplication.processEvents() # Update UI immediately
+                
+                self.image = Image.open(path)
+                self.current_path = path
+            else:
+                # Multiple files case - combine them
+                file_names = [os.path.basename(p) for p in paths]
+                print(f"[dropEvent] Loading multiple files: {file_names}")
+                self.update_status(f"Loading {len(paths)} files...")
+                QApplication.processEvents() # Update UI immediately
+                
+                # Combine the images horizontally
+                combined_image = self.combine_images_horizontally(paths)
+                if combined_image is None:
+                    print("[dropEvent] Failed to combine images. All images must have the same height.")
+                    self.update_status("Error: Failed to combine images. All images must have the same height.")
+                    return
+                    
+                self.image = combined_image
+                # Create a temporary path for the combined image
+                self.current_path = os.path.join(os.path.dirname(paths[0]), "combined_image.png")
+                print(f"[dropEvent] Created combined image with size: {self.image.size}")
+            
+            # Continue with normal processing
             self.alignment_point = None # Reset alignment point on new image
             self.manual_grid_override = False  # Reset to FFT mode on new image
+            
+            # Store the original resolution for reference
+            self.original_resolution = f"{self.image.width}×{self.image.height}"
             
             # Set default sigma to half the frame width
             img_width = self.image.width
             frame_width = img_width // (self.grid_cols or 3)
             self.current_sigma = frame_width / 2
+        except Exception as e:
+            import traceback
+            print(f"Error loading or processing image: {e}")
+            print(traceback.format_exc())
+            self.update_status(f"Error: {e}")
+            self.image = None
+            self.frames = []
+            self.qpixmaps = []
+            self.aligned_frames = []
+            self.setText("Drag and drop one or more images here") # Reset text
+            if self.gif_button: self.gif_button.setEnabled(False)
+            if self.mp4_button: self.mp4_button.setEnabled(False)
+            if self.webm_button: self.webm_button.setEnabled(False)
+            return
             
+        try:
             # Update the sigma spinbox with the new default value
             if hasattr(self, 'alignment_sigma_spinbox'):
                 self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
                 print(f"[dropEvent] Setting default sigma to {int(self.current_sigma)} (half frame width)")
             
-            # Set pingpong_mode on the image for use in slice_and_create_gif
+            # Update resolution label to show original resolution
+            if hasattr(self, 'resolution_label'):
+                self.resolution_label.setText(f"Resolution (Original: {self.original_resolution}):")
+            
+            # Set parameters on the image for use in slice_and_create_gif
             self.image.pingpong_mode = self.pingpong_mode
+            
+            # Set output parameters on the image
+            if hasattr(self, 'output_resolution'):
+                self.image.output_resolution = self.output_resolution
+            if hasattr(self, 'output_fps'):
+                self.image.output_fps = self.output_fps
             # Slice the image into frames
             frames = self.slice_image() # Get initial frames
             print(f"[dropEvent] Num frames from slice_image: {len(frames)}")
@@ -1114,8 +1350,12 @@ class DropLabel(QLabel):
             if self.qpixmaps:
                 self.current_frame_idx = 0
                 self.setPixmap(self.qpixmaps[0])
-                self.animation_timer.start(125) # Start animation at ~8fps
-                self.update_status(f"Loaded: {os.path.basename(path)}. Click a point to align.")
+                # Calculate timer interval based on selected fps
+                fps = self.get_selected_fps()
+                interval = int(1000 / fps)  # Convert fps to milliseconds
+                self.animation_timer.start(interval)
+                # Use current_path which is set for both single and multiple file cases
+                self.update_status(f"Loaded: {os.path.basename(self.current_path)}. Click a point to align.")
                 # Enable save buttons only after successful load and frame prep
                 if self.gif_button: self.gif_button.setEnabled(True)
                 if self.mp4_button: self.mp4_button.setEnabled(True)
@@ -1132,11 +1372,14 @@ class DropLabel(QLabel):
             self.frames = []
             self.qpixmaps = []
             self.aligned_frames = []
-            self.setText("Drag and drop images here") # Reset text
+            self.setText("Drag and drop one or more images here") # Reset text
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
-            if self.qpixmaps and num_frames > 0 and self.click_pos is not None:
+            # This code block seems to be unreachable since we've already returned from the function
+            # and qpixmaps would be empty at this point, but let's fix it anyway
+            if self.qpixmaps and len(self.qpixmaps) > 0 and self.click_pos is not None:
+                num_frames = len(self.qpixmaps)
                 ref_idx = num_frames // 2 if num_frames % 2 == 1 else num_frames // 2 - 1
                 pixmap = self.qpixmaps[ref_idx] # Use the pixmap of the reference frame
 
@@ -1345,7 +1588,10 @@ class DropLabel(QLabel):
                 if self.qpixmaps:
                     self.current_frame_idx = 0
                     self.setPixmap(self.qpixmaps[self.current_frame_idx])
-                    self.animation_timer.start()
+                    # Calculate timer interval based on selected fps
+                    fps = self.get_selected_fps()
+                    interval = int(1000 / fps)  # Convert fps to milliseconds
+                    self.animation_timer.start(interval)
             except Exception as e:
                 print(f"[trigger_alignment] Error during alignment: {e}")
                 import traceback
@@ -1355,20 +1601,24 @@ class DropLabel(QLabel):
                 self.prepare_animation_frames()
 
     def load_image_dialog(self):
-        """Open a file dialog to load an image."""
+        """Open a file dialog to load one or more images."""
         from PySide6.QtWidgets import QFileDialog
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open Image",
+            "Open Image(s)",
             "",
             "Image Files (*.jpg *.jpeg *.png *.gif *.mpo);;All Files (*)"
         )
-        if file_path:
-            # Simulate a drop event with this file
+        if file_paths:
+            # Simulate a drop event with these files
             from PySide6.QtCore import QMimeData, QUrl
             from PySide6.QtGui import QDropEvent
             mime = QMimeData()
-            mime.setUrls([QUrl.fromLocalFile(file_path)])
+            
+            # Convert all file paths to QUrls
+            urls = [QUrl.fromLocalFile(path) for path in file_paths]
+            mime.setUrls(urls)
+            
             drop_event = QDropEvent(
                 self.rect().center(),
                 Qt.CopyAction,
@@ -1383,6 +1633,9 @@ class DropLabel(QLabel):
         if not hasattr(self, 'aligned_frames') or not self.aligned_frames:
             self.update_status("No frames to save!")
             return
+            
+        # Update output parameters before saving
+        self.update_output_parameters()
         
         # Default save location relative to input file
         default_save_path = ""
@@ -1403,7 +1656,26 @@ class DropLabel(QLabel):
             if not file_path.lower().endswith('.gif'):
                 file_path += '.gif'
             try:
-                frames = self.aligned_frames[:]
+                # Get the selected resolution
+                target_height = self.get_selected_resolution_height()
+                
+                # Get the selected frame rate and convert to duration in ms
+                fps = self.get_selected_fps()
+                duration = int(1000 / fps)  # Convert fps to milliseconds
+                
+                # Scale frames to the target resolution
+                if self.aligned_frames and len(self.aligned_frames) > 0:
+                    frames = []
+                    first_frame = self.aligned_frames[0]
+                    original_height = first_frame.height
+                    scale_factor = target_height / original_height
+                    print(f"[save_gif] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
+                    
+                    for frame in self.aligned_frames:
+                        scaled_frame = scale_image(frame, scale_factor * 0.5)  # GIF at half resolution
+                        frames.append(scaled_frame)
+                else:
+                    frames = self.aligned_frames[:]
                 
                 # Create animation sequence based on pingpong_mode
                 if len(frames) <= 1:
@@ -1417,11 +1689,16 @@ class DropLabel(QLabel):
                     animation_frames = frames * 2
                     print("[save_gif] Using forward-only mode")
                 
+                # Report the actual output resolution
+                if animation_frames and len(animation_frames) > 0:
+                    output_width, output_height = animation_frames[0].size
+                    print(f"[save_gif] Output GIF resolution: {output_width}×{output_height}")
+                
                 animation_frames[0].save(
                     file_path,
                     save_all=True,
                     append_images=animation_frames[1:],
-                    duration=125,
+                    duration=duration,
                     loop=0
                 )
                 
@@ -1435,6 +1712,9 @@ class DropLabel(QLabel):
         if not hasattr(self, 'aligned_frames') or not self.aligned_frames:
             self.update_status("No frames to save!")
             return
+            
+        # Update output parameters before saving
+        self.update_output_parameters()
         
         # Default save location relative to input file
         default_save_path = ""
@@ -1457,11 +1737,35 @@ class DropLabel(QLabel):
             try:
                 import cv2
                 import numpy as np
+                
+                # Get the selected resolution
+                target_height = self.get_selected_resolution_height()
+                
+                # Scale frames to the target resolution
+                if self.aligned_frames and len(self.aligned_frames) > 0:
+                    scaled_frames = []
+                    first_frame = self.aligned_frames[0]
+                    original_height = first_frame.height
+                    scale_factor = target_height / original_height
+                    print(f"[save_mp4] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
+                    
+                    for frame in self.aligned_frames:
+                        scaled_frame = scale_image(frame, scale_factor)
+                        scaled_frames.append(scaled_frame)
+                else:
+                    scaled_frames = self.aligned_frames[:]
+                
+                # Convert to cv2 format
                 cv2_frames = []
-                for frame in self.aligned_frames:
+                for frame in scaled_frames:
                     np_frame = np.array(frame)
                     cv2_frame = cv2.cvtColor(np_frame, cv2.COLOR_RGB2BGR)
                     cv2_frames.append(cv2_frame)
+                
+                # Report the actual output resolution
+                if cv2_frames and len(cv2_frames) > 0:
+                    height, width = cv2_frames[0].shape[:2]
+                    print(f"[save_mp4] Output MP4 resolution: {width}×{height}")
                 
                 # Create animation sequence based on pingpong_mode
                 if len(cv2_frames) <= 1:
@@ -1480,7 +1784,9 @@ class DropLabel(QLabel):
                 
                 height, width = animation_frames[0].shape[:2]
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(file_path, fourcc, 8.0, (width, height))
+                # Get the selected frame rate
+                fps = self.get_selected_fps()
+                out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
                 for frame in animation_frames:
                     out.write(frame)
                 out.release()
@@ -1497,6 +1803,9 @@ class DropLabel(QLabel):
         if not hasattr(self, 'aligned_frames') or not self.aligned_frames:
             self.update_status("No frames to save!")
             return
+            
+        # Update output parameters before saving
+        self.update_output_parameters()
         
         # Default save location relative to input file
         default_save_path = ""
@@ -1522,7 +1831,21 @@ class DropLabel(QLabel):
                 
                 # Use the webm_frames which are downscaled to 0.4 (2x the GIF size)
                 # First, create the webm frames from the aligned frames
-                webm_frames = [scale_image(image, 0.4) for image in self.aligned_frames]
+                # Get the selected resolution
+                target_height = self.get_selected_resolution_height()
+                
+                # Calculate scaling factor based on the first frame's height
+                if self.aligned_frames and len(self.aligned_frames) > 0:
+                    first_frame = self.aligned_frames[0]
+                    original_height = first_frame.height
+                    scale_factor = target_height / original_height
+                    print(f"[save_webm] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
+                    
+                    # Scale frames to the target resolution
+                    webm_frames = [scale_image(image, scale_factor) for image in self.aligned_frames]
+                else:
+                    # Fallback to old behavior if no frames
+                    webm_frames = [scale_image(image, 0.4) for image in self.aligned_frames]
                 
                 cv2_frames = []
                 for frame in webm_frames:
@@ -1547,7 +1870,9 @@ class DropLabel(QLabel):
                 
                 height, width = animation_frames[0].shape[:2]
                 fourcc = cv2.VideoWriter_fourcc(*'VP90')  # WebM codec
-                out = cv2.VideoWriter(file_path, fourcc, 8.0, (width, height))
+                # Get the selected frame rate
+                fps = self.get_selected_fps()
+                out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
                 for frame in animation_frames:
                     out.write(frame)
                 out.release()
@@ -1566,20 +1891,50 @@ class DropLabel(QLabel):
         if self.cursor_pos is not None and self.image is not None:
             # Draw the hover mask visualization
             if self.show_hover_mask:
+                # Calculate the scale factor between the original image and the displayed image
+                if hasattr(self, 'qpixmaps') and self.qpixmaps and self.current_frame_idx < len(self.qpixmaps):
+                    pixmap = self.qpixmaps[self.current_frame_idx]
+                    pixmap_w, pixmap_h = pixmap.width(), pixmap.height()
+                    
+                    # Get the grid dimensions
+                    grid_rows = self.grid_rows if self.grid_rows else 1
+                    grid_cols = self.grid_cols if self.grid_cols else 3
+                    
+                    # Get the dimensions of the full image
+                    img_w, img_h = self.image.size
+                    
+                    # Calculate the dimensions of a single frame
+                    frame_width = img_w // grid_cols
+                    frame_height = img_h // grid_rows
+                    
+                    # Calculate the scale factors for the current frame
+                    # We need the inverse of the scale factor because we're going from image coordinates to display coordinates
+                    scale_x = frame_width / pixmap_w
+                    scale_y = frame_height / pixmap_h
+                    
+                    # Use the average scale factor
+                    scale_factor = (scale_x + scale_y) / 2
+                    
+                    # Scale the radius by the inverse of the scale factor
+                    # This makes the circle size on screen represent the actual size in the image
+                    display_radius = (self.current_sigma / 2) / scale_factor
+                else:
+                    # Fallback if we can't calculate the scale factor
+                    display_radius = self.current_sigma / 2
+                
                 # Draw the sigma circle to visualize the current sigma value
                 painter.setPen(QPen(QColor(0, 255, 0), 2))
                 painter.setBrush(Qt.NoBrush)
-                painter.drawEllipse(self.cursor_pos, self.current_sigma / 2, self.current_sigma / 2)
+                painter.drawEllipse(self.cursor_pos, display_radius, display_radius)
                 
                 # Draw a gradient to visualize the gaussian mask
-                radius = self.current_sigma / 2
-                grad = QRadialGradient(self.cursor_pos.x(), self.cursor_pos.y(), radius)
+                grad = QRadialGradient(self.cursor_pos.x(), self.cursor_pos.y(), display_radius)
                 grad.setColorAt(0, QColor(255, 0, 0, 80))
                 grad.setColorAt(0.5, QColor(255, 0, 0, 40))
                 grad.setColorAt(1, QColor(255, 0, 0, 0))
                 painter.setBrush(QBrush(grad))
                 painter.setPen(Qt.NoPen)
-                painter.drawEllipse(self.cursor_pos, radius, radius)
+                painter.drawEllipse(self.cursor_pos, display_radius, display_radius)
                 
                 # Draw crosshair at cursor position
                 painter.setPen(QPen(QColor(255, 0, 0), 2))
@@ -1734,14 +2089,40 @@ class DropLabel(QLabel):
             # Update the UI
             self.update()
             QApplication.processEvents()  # Process any pending events
-        elif self.selecting_alignment_point:
-            # Update cursor position for alignment point selection
-            self.cursor_pos = event.position()
-            self.update()
         elif self.image is not None:
-            # Update cursor position for hover mask display
-            self.cursor_pos = event.position()
-            self.update()
+            # Always update cursor position for hover mask display when image is loaded
+            # This makes the red gradient circle appear on hover without requiring a click
+            pos = event.position()
+            
+            # Only update cursor position if we have a valid pixmap to display
+            if hasattr(self, 'qpixmaps') and self.qpixmaps and self.current_frame_idx < len(self.qpixmaps):
+                # Get the dimensions of the label and pixmap
+                label_w, label_h = self.width(), self.height()
+                pixmap = self.qpixmaps[self.current_frame_idx]
+                pixmap_w, pixmap_h = pixmap.width(), pixmap.height()
+                
+                # Calculate the offset of the pixmap within the label
+                offset_x = max(0, (label_w - pixmap_w) / 2)
+                offset_y = max(0, (label_h - pixmap_h) / 2)
+                
+                # Calculate the position relative to the pixmap
+                rel_x = pos.x() - offset_x
+                rel_y = pos.y() - offset_y
+                
+                # Only update cursor position if mouse is over the pixmap
+                if 0 <= rel_x < pixmap_w and 0 <= rel_y < pixmap_h:
+                    # Create a QPoint with the adjusted coordinates
+                    from PySide6.QtCore import QPoint
+                    self.cursor_pos = QPoint(int(rel_x + offset_x), int(rel_y + offset_y))
+                    self.update()
+                else:
+                    # Mouse is outside the image area, don't show the gradient
+                    self.cursor_pos = None
+                    self.update()
+            else:
+                # Fallback to raw position if we don't have pixmaps yet
+                self.cursor_pos = pos
+                self.update()
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release events for grid interaction."""
@@ -1820,7 +2201,10 @@ class DropLabel(QLabel):
                     QApplication.processEvents()  # Process any pending events
                     
                     # Start with a slight delay to ensure UI is updated
-                    self.animation_timer.start(125)
+                    # Calculate timer interval based on selected fps
+                    fps = self.get_selected_fps()
+                    interval = int(1000 / fps)  # Convert fps to milliseconds
+                    self.animation_timer.start(interval)
                     
                     print(f"[mouseReleaseEvent] Animation timer restarted with {len(self.qpixmaps)} frames")
             
@@ -1903,14 +2287,14 @@ class DropLabel(QLabel):
                     # Trigger alignment
                     self.trigger_alignment()
             
-            self.cursor_pos = None
+            # Don't clear cursor_pos so the hover gradient stays visible
             self.update()
         
         super().mouseReleaseEvent(event)
         
     def wheelEvent(self, event):
         """Handle mouse wheel events to adjust sigma value."""
-        if self.image is not None and self.cursor_pos is not None:
+        if self.image is not None:
             # Get the delta value from the wheel event
             delta = event.angleDelta().y()
             
@@ -1938,6 +2322,59 @@ class DropLabel(QLabel):
             
             # Update status with current sigma value
             self.update_status(f"Sigma: {int(self.current_sigma)}")
+            
+    def get_selected_resolution_height(self):
+        """Get the height value from the selected resolution option."""
+        if not hasattr(self, 'resolution_combo'):
+            return 1080  # Default to 1080p if combo box doesn't exist
+            
+        selected_text = self.resolution_combo.currentText()
+        try:
+            # Extract the resolution part (e.g., "1920×1080" from "1920×1080 (FHD)")
+            resolution_part = selected_text.split(" ")[0]
+            # Split by "×" and get the first number (shorter dimension)
+            height = int(resolution_part.split("×")[0])
+            return height
+        except:
+            return 1080  # Default to 1080p if parsing fails
+    
+    def get_selected_fps(self):
+        """Get the fps value from the selected frame rate option."""
+        if not hasattr(self, 'fps_combo'):
+            return 8.0  # Default to 8 fps if combo box doesn't exist
+            
+        selected_text = self.fps_combo.currentText()
+        try:
+            # Extract the fps part (e.g., "8" from "8 (Original)")
+            fps_part = selected_text.split(" ")[0]
+            # Convert to float
+            fps = float(fps_part)
+            return fps
+        except:
+            return 8.0  # Default to 8 fps if parsing fails
+            
+    def update_output_parameters(self):
+        """Update the output parameters based on UI selections."""
+        if hasattr(self, 'resolution_combo'):
+            self.output_resolution = self.resolution_combo.currentText().split(" ")[0]
+            
+        if hasattr(self, 'fps_combo'):
+            fps_text = self.fps_combo.currentText().split(" ")[0]
+            try:
+                self.output_fps = float(fps_text)
+            except:
+                self.output_fps = 8.0
+                
+        # Store these values on the image object for use in slice_and_create_gif
+        if hasattr(self, 'image') and self.image:
+            self.image.output_resolution = self.output_resolution
+            self.image.output_fps = self.output_fps
+            
+        # Update animation timer if it's running
+        if hasattr(self, 'animation_timer') and self.animation_timer.isActive():
+            self.animation_timer.stop()
+            interval = int(1000 / self.output_fps)
+            self.animation_timer.start(interval)
 
 def launch_gui():
     """Sets up and launches the PySide6 GUI application."""
@@ -1957,7 +2394,7 @@ def launch_gui():
     window.setGeometry(100, 100, 800, 600)
     layout = QVBoxLayout(window)
     
-    status_label = QLabel("Drag and drop a multi-frame image (e.g., stereoscopic MPO) or a GIF.")
+    status_label = QLabel("Drag and drop one or more images to combine them horizontally. Multiple images must have the same height.")
     status_label.setAlignment(Qt.AlignCenter)
     
     button_layout = QHBoxLayout()

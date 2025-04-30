@@ -29,6 +29,6 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='../icons/icon_512_tIf_icon.ico',
+    icon='../icons/icon.ico',
     onefile=True,
 )
