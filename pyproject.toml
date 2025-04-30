@@ -13,7 +13,8 @@ dependencies = [
     "PySide6",
     "imageio",
     "scikit-image",
-    "numpy"
+    "numpy",
+    "opencv-python"
 ]
 
 [dependency-groups]
