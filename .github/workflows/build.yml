@@ -46,19 +46,6 @@ jobs:
         run: |
           ls -lR dist
 
-      - name: Zip build output (Linux/Windows)
-        if: matrix.os != 'macos-latest'
-        run: |
-          cd dist
-          zip ${{ matrix.artifact_name }} ${artifact_name%.*}
-        shell: bash
-
-      - name: Zip macOS .app bundle
-        if: matrix.os == 'macos-latest'
-        run: |
-          cd dist
-          zip -r WigglegramCreator.app.zip WigglegramCreator.app
-
       - name: Upload Release Asset
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
