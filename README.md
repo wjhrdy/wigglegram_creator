@@ -25,70 +25,45 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
    ```
 2. **Install dependencies:**
    ```sh
-   uv pip install .
+   uv sync
    ```
 3. **Run the app:**
    ```sh
-   python create_wiggle.py
+   uv run python create_wiggle.py
    ```
-
-## Releases & Building
-
-Prebuilt binaries for Windows, Linux, and macOS (x86_64 and arm64) are available from the [GitHub Releases](https://github.com/nallic/wigglegram_creator/releases) page. 
-
-### Automated Releases (Best Practice)
-- Binaries are automatically built and uploaded to each GitHub Release using GitHub Actions.
-- **Triggering a Release Build:**
-  1. Bump your version and commit your changes.
-  2. Tag your commit with a version tag (e.g., `v1.2.3`):
-     ```sh
-     git tag v1.2.3
-     git push origin v1.2.3
-     ```
-  3. GitHub Actions will build and upload binaries for all platforms to the new release.
-- Each platform uses the appropriate icon and packaging format (see `.github/workflows/build.yml`).
-- All dependencies for building are managed via `requirements.txt`.
 
 ### Manual Build (Advanced)
 If you want to build the app yourself:
+
 1. **(Recommended) Set up your environment with [uv](https://github.com/astral-sh/uv):**
    ```sh
    uv sync
    ```
-
-   **Or, with pip:**
-   ```sh
-   pip install -r requirements.txt
-   pip install pyinstaller
-   ```
 2. **Build the app:**
    - **Windows:**
      ```sh
-     pyinstaller specs/windows.spec
+     uv run pyinstaller specs/windows.spec
      ```
    - **macOS:**
      ```sh
-     pyinstaller specs/macos.spec
+     uv run pyinstaller specs/macos.spec
      ```
    - **Linux:**
      ```sh
-     pyinstaller specs/linux.spec
+     uv run pyinstaller specs/linux.spec
      ```
    The executable or bundle will be created in the `dist/` folder.
 
 ## Usage
 - **Drag and drop** one or more images (JPG/PNG) onto the app window.
-- The app will generate:
-  - A downscaled animated GIF (for sharing)
-  - A full-size looping MP4 video (for social media, etc.)
-- Outputs are saved in the same folder as the input images.
-
-## GitHub Actions
-Binaries for all supported platforms are automatically built and uploaded to each release using GitHub Actions.
+- **Slice** the image using grid in the top left
+- **Click on the image** where you want the center of the wiggle to be
+- **Scroll** to change the size of the area to focus on and refine the wiggle
+- **Choose** the output scale and fps
+- **Export as** GIF or MP4 or WebM
 
 ## TODO
 - fix automated build of executable
-- fix custom alignment logic
 
 ## License
 MIT

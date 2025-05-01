@@ -842,54 +842,54 @@ class DropLabel(QLabel):
         from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QGroupBox, QDoubleSpinBox, QComboBox
         
         # Create a group box for alignment parameters
-        align_group = QGroupBox("Alignment Parameters")
-        align_layout = QVBoxLayout()
-        align_group.setLayout(align_layout)
+        # align_group = QGroupBox("Alignment Parameters")
+        # align_layout = QVBoxLayout()
+        # align_group.setLayout(align_layout)
         
-        # Create a row for each parameter
-        sigma_row = QHBoxLayout()
-        power_row = QHBoxLayout()
-        base_row = QHBoxLayout()
+        # # Create a row for each parameter
+        # sigma_row = QHBoxLayout()
+        # power_row = QHBoxLayout()
+        # base_row = QHBoxLayout()
         
-        # Sigma parameter (controls focus area size)
-        self.sigma_label = QLabel("Sigma:")
-        self.alignment_sigma_spinbox = QSpinBox()
-        self.alignment_sigma_spinbox.setRange(1, 2000) # Increased range for sigma
-        # Default value will be set when an image is loaded (half the frame width)
-        self.alignment_sigma_spinbox.setValue(GAUSSIAN_SIGMA)
-        self.alignment_sigma_spinbox.setToolTip("Size of focus area (scroll to adjust)")
-        sigma_row.addWidget(self.sigma_label)
-        sigma_row.addWidget(self.alignment_sigma_spinbox)
+        # # Sigma parameter (controls focus area size)
+        # self.sigma_label = QLabel("Sigma:")
+        # self.alignment_sigma_spinbox = QSpinBox()
+        # self.alignment_sigma_spinbox.setRange(1, 2000) # Increased range for sigma
+        # # Default value will be set when an image is loaded (half the frame width)
+        # self.alignment_sigma_spinbox.setValue(GAUSSIAN_SIGMA)
+        # self.alignment_sigma_spinbox.setToolTip("Size of focus area (scroll to adjust)")
+        # sigma_row.addWidget(self.sigma_label)
+        # sigma_row.addWidget(self.alignment_sigma_spinbox)
         
-        # Connect the spinbox value change to update current_sigma
-        self.alignment_sigma_spinbox.valueChanged.connect(self.update_sigma_from_spinbox)
+        # # Connect the spinbox value change to update current_sigma
+        # self.alignment_sigma_spinbox.valueChanged.connect(self.update_sigma_from_spinbox)
         
-        # Power parameter (controls falloff steepness)
-        self.power_label = QLabel("Power:")
-        self.power_spinbox = QSpinBox()
-        self.power_spinbox.setRange(1, 20) # Reasonable range for power
-        self.power_spinbox.setValue(GAUSSIAN_POWER) # Default value
-        self.power_spinbox.setToolTip("Steepness of weight falloff (higher=steeper falloff)")
-        power_row.addWidget(self.power_label)
-        power_row.addWidget(self.power_spinbox)
+        # # Power parameter (controls falloff steepness)
+        # self.power_label = QLabel("Power:")
+        # self.power_spinbox = QSpinBox()
+        # self.power_spinbox.setRange(1, 20) # Reasonable range for power
+        # self.power_spinbox.setValue(GAUSSIAN_POWER) # Default value
+        # self.power_spinbox.setToolTip("Steepness of weight falloff (higher=steeper falloff)")
+        # power_row.addWidget(self.power_label)
+        # power_row.addWidget(self.power_spinbox)
         
-        # Base parameter (controls minimum weight)
-        self.base_label = QLabel("Base:")
-        self.base_spinbox = QDoubleSpinBox()
-        self.base_spinbox.setRange(0.001, 0.5) # Reasonable range for base
-        self.base_spinbox.setSingleStep(0.01)
-        self.base_spinbox.setValue(GAUSSIAN_BASE) # Default value
-        self.base_spinbox.setToolTip("Minimum weight for distant areas (lower=more contrast)")
-        base_row.addWidget(self.base_label)
-        base_row.addWidget(self.base_spinbox)
+        # # Base parameter (controls minimum weight)
+        # self.base_label = QLabel("Base:")
+        # self.base_spinbox = QDoubleSpinBox()
+        # self.base_spinbox.setRange(0.001, 0.5) # Reasonable range for base
+        # self.base_spinbox.setSingleStep(0.01)
+        # self.base_spinbox.setValue(GAUSSIAN_BASE) # Default value
+        # self.base_spinbox.setToolTip("Minimum weight for distant areas (lower=more contrast)")
+        # base_row.addWidget(self.base_label)
+        # base_row.addWidget(self.base_spinbox)
         
         # Add rows to the alignment layout
-        align_layout.addLayout(sigma_row)
-        align_layout.addLayout(power_row)
-        align_layout.addLayout(base_row)
+        # align_layout.addLayout(sigma_row)
+        # align_layout.addLayout(power_row)
+        # align_layout.addLayout(base_row)
         
         # Add the alignment group to the main button layout
-        self.button_layout.addWidget(align_group)
+        # self.button_layout.addWidget(align_group)
         
         # Create a group box for output parameters
         output_group = QGroupBox("Output Parameters")
@@ -925,7 +925,7 @@ class DropLabel(QLabel):
         
         # Add frame rate options
         self.fps_options = [
-            "8 (Original)",
+            "8",
             "23.976",
             "24",
             "25",
@@ -951,13 +951,6 @@ class DropLabel(QLabel):
         
         # Add the output group to the main button layout
         self.button_layout.addWidget(output_group)
-        
-        # Add a button to toggle alignment visualization
-        self.show_alignment_button = QPushButton("Show Alignment Debug")
-        self.show_alignment_button.setCheckable(True)
-        self.show_alignment_button.setChecked(False)
-        self.show_alignment_button.setToolTip("Show alignment debug visualization")
-        self.button_layout.addWidget(self.show_alignment_button)
         
         # Add pingpong mode checkbox
         from PySide6.QtWidgets import QCheckBox
