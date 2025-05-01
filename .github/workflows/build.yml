@@ -45,6 +45,20 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Install Qt X11 dependencies (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-cursor0 \
+            libxcb-render-util0 \
+            libxcb-icccm4 \
+            libxkbcommon-x11-0 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-shape0 \
+            libxcb-xkb1
+
       - name: Install uv
         run: pip install uv
 
