@@ -50,11 +50,8 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
-
       - name: Build with PyInstaller
-        run: pyinstaller ${{ matrix.spec }}
+        run: uv run pyinstaller ${{ matrix.spec }}
 
       - name: Zip build output
         run: |
