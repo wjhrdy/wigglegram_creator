@@ -12,32 +12,20 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python_arch: 'x64'
             spec: specs/linux.spec
-            upload_exe_with_name: 'WigglegramCreator'
+            upload_exe_with_name: 'WigglegramCreator-linux-x64'
           - os: windows-latest
-            python_arch: 'x64'
             spec: specs/windows.spec
+            upload_exe_with_name: 'WigglegramCreator-windows-x64'
           - os: macos-latest
-            python_arch: 'x64'
             spec: specs/macos.spec
-          - os: ubuntu-latest
-            python_arch: 'arm64'
-            spec: specs/linux.spec
-          - os: windows-latest
-            python_arch: 'arm64'
-            spec: specs/windows.spec
-          - os: macos-latest
-            python_arch: 'arm64'
-            spec: specs/macos.spec
+            upload_exe_with_name: 'WigglegramCreator-macos-x64'
 
     steps:
       - name: Create Executable
         uses: sayyid5416/pyinstaller@v1
         with:
           python_ver: '3.13'
-          python_arch: ${{ matrix.python_arch }}
           spec: '${{ matrix.spec }}'
           requirements: 'requirements.txt'
-          upload_exe_with_name: 'WigglegramCreator'
-          options: '--onefile'
+          upload_exe_with_name: '${{ matrix.upload_exe_with_name }}'
