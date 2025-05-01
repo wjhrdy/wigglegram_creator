@@ -70,6 +70,7 @@ jobs:
 
       - name: Zip build output
         run: |
+          ls -l dist
           cd dist
           zip -r ../wigglegram-creator-${{ runner.os }}-${{ matrix.arch }}.zip .
         shell: bash
