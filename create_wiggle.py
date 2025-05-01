@@ -742,7 +742,7 @@ class DropLabel(QLabel):
         self.show_hover_mask = True  # Flag to control hover mask display
         self.grid_origin = (0, 0)
         self.expanded_grid_active = False
-        self.expanded_grid_size = (10, 10)
+        self.expanded_grid_size = (25, 25)
         self.expanded_grid_cell_size = 32
         self.expanded_grid_top_left = (8, 8)  # Always margin, margin
         self.expanded_grid_start_cell = (0, 0)
@@ -978,6 +978,11 @@ class DropLabel(QLabel):
         self.webm_button.clicked.connect(self.save_webm)
         self.webm_button.setEnabled(False)
         self.button_layout.addWidget(self.webm_button)
+        
+        self.export_frames_button = QPushButton("Export Frames")
+        self.export_frames_button.clicked.connect(self.export_frames)
+        self.export_frames_button.setEnabled(False)
+        self.button_layout.addWidget(self.export_frames_button)
     
     def update_sigma_from_spinbox(self, value):
         """Update the current_sigma value when the spinbox changes."""
@@ -1281,12 +1286,13 @@ class DropLabel(QLabel):
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
+            if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(False)
             return
             
         try:
             # Update the sigma spinbox with the new default value
             if hasattr(self, 'alignment_sigma_spinbox'):
-                self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
+                # self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
                 print(f"[dropEvent] Setting default sigma to {int(self.current_sigma)} (half frame width)")
             
             # Update resolution label to show original resolution
@@ -1353,6 +1359,7 @@ class DropLabel(QLabel):
                 if self.gif_button: self.gif_button.setEnabled(True)
                 if self.mp4_button: self.mp4_button.setEnabled(True)
                 if self.webm_button: self.webm_button.setEnabled(True)
+                if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(True)
             else:
                 print("[dropEvent] No QPixmaps prepared.")
                 raise ValueError("Failed to prepare QPixmap frames for animation.")
@@ -1369,6 +1376,7 @@ class DropLabel(QLabel):
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
+            if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(False)
             # This code block seems to be unreachable since we've already returned from the function
             # and qpixmaps would be empty at this point, but let's fix it anyway
             if self.qpixmaps and len(self.qpixmaps) > 0 and self.click_pos is not None:
@@ -1876,6 +1884,60 @@ class DropLabel(QLabel):
                 self.update_status(f"Error saving WebM: {e}")
                 import traceback
                 print(traceback.format_exc())
+    
+    def export_frames(self):
+        """Export each unique frame as a separate image at full resolution."""
+        if not hasattr(self, 'aligned_frames') or not self.aligned_frames:
+            self.update_status("No frames to export!")
+            return
+            
+        # Update output parameters before exporting
+        self.update_output_parameters()
+        
+        # Default export directory relative to input file
+        default_export_dir = ""
+        if self.current_path:
+            input_dir = os.path.dirname(self.current_path)
+            input_filename = os.path.basename(self.current_path)
+            input_name = os.path.splitext(input_filename)[0]
+            default_export_dir = os.path.join(input_dir, f"{input_name}_frames")
+        
+        from PySide6.QtWidgets import QFileDialog
+        export_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory to Export Frames",
+            default_export_dir
+        )
+        
+        if not export_dir:
+            return  # User canceled
+            
+        try:
+            # Create the export directory if it doesn't exist
+            os.makedirs(export_dir, exist_ok=True)
+            
+            # Get the selected resolution
+            target_height = self.get_selected_resolution_height()
+            
+            # Export each frame at full resolution
+            for i, frame in enumerate(self.aligned_frames):
+                # Scale frame to target resolution
+                original_height = frame.height
+                scale_factor = target_height / original_height
+                scaled_frame = scale_image(frame, scale_factor)
+                
+                # Save the frame
+                frame_path = os.path.join(export_dir, f"frame_{i+1:03d}.png")
+                scaled_frame.save(frame_path, format="PNG")
+                
+            # Report success
+            num_frames = len(self.aligned_frames)
+            self.update_status(f"Exported {num_frames} frames to: {export_dir}")
+            
+        except Exception as e:
+            self.update_status(f"Error exporting frames: {e}")
+            import traceback
+            print(traceback.format_exc())
     
     def paintEvent(self, event):
         super().paintEvent(event)
