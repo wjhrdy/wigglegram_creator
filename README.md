@@ -13,9 +13,21 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 - **Cross-platform**: Runs on Windows, Linux, and macOS.
 
 ## Requirements
-- Windows, Linux, or macOS
-- Python 3.12+
 - [uv](https://github.com/astral-sh/uv) (for dependency management)
+
+### Quick Start
+
+1. Install `uv` (if you don't have it):
+   ```bash
+   curl -sSf https://astral.sh/uv/install.sh | sh
+   ```
+   Follow the on-screen instructions to add `uv` to your PATH.
+
+2. Install and run the GUI application:
+   ```bash
+   uvx --from git+https://github.com/wjhrdy/wigglegram_creator wigglegram_creator
+   ```
+
 
 ## Installation (Development)
 1. **Clone the repository:**

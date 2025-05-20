@@ -22,3 +22,5 @@ dev = [
     "pyinstaller"
 ]
 
+[project.scripts]
+wigglegram-creator = "create_wiggle:main"
