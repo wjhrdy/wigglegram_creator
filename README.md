@@ -4,18 +4,18 @@
 
 # Wigglegram Creator
 
-Wigglegram Creator is a simple, user-friendly application for generating animated GIFs and looping MP4 videos from a sequence of images. It features a modern drag-and-drop interface built with PySide6 (Qt for Python). No complex dependencies or command-line usage required—just drag your images onto the app window and your outputs are created automatically!
+Wigglegram Creator is a simple, user-friendly application for generating animated GIFs and looping MP4 videos from a sequence of images. It features a modern drag-and-drop interface built with PySide6 (Qt for Python).
 
 ## Features
 - **Drag-and-drop GUI**: Easily add images for processing.
 - **Animated GIF output**: Downscaled for easy sharing.
 - **Looping MP4 video output**: Full resolution, repeating sequence (1-2-3-2, repeated 10x).
 - **Cross-platform**: Runs on Windows, Linux, and macOS.
+- **Command-line interface**: For automation and scripting.
 
-## Requirements
-- [uv](https://github.com/astral-sh/uv) (for dependency management)
+## Installation
 
-### Quick Start
+### Using uv (Recommended)
 
 1. Install `uv` (if you don't have it):
    ```bash
@@ -25,11 +25,37 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 
 2. Install and run the GUI application:
    ```bash
-   uvx --from git+https://github.com/wjhrdy/wigglegram_creator wigglegram_creator
+   uvx --from git+https://github.com/wjhrdy/wigglegram_creator wigglegram-creator gui
    ```
 
+### Using pip
 
-## Installation (Development)
+```bash
+pip install git+https://github.com/wjhrdy/wigglegram_creator.git
+```
+
+## Usage
+
+### GUI Mode
+
+```bash
+wigglegram-creator gui
+# or with debug mode
+wigglegram-creator gui --debug
+```
+
+### Command Line Mode
+
+```bash
+# Create a wigglegram from images
+wigglegram-creator create image1.jpg image2.jpg image3.jpg -o output.gif
+
+# Specify FPS
+wigglegram-creator create image*.jpg -o output.gif --fps 10
+```
+
+## Development
+
 1. **Clone the repository:**
    ```sh
    git clone <repo-url>
