@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-wigglegram-creator = "create_wiggle:main"
+create_wiggle = "create_wiggle:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
