@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-create_wiggle = "create_wiggle:main"
+create_wiggle = "create_wiggle:launch_gui"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
