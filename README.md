@@ -9,9 +9,11 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 ## Features
 - **Drag-and-drop GUI**: Easily add images for processing.
 - **Animated GIF output**: Downscaled for easy sharing.
-- **Looping MP4 video output**: Full resolution, repeating sequence (1-2-3-2, repeated 10x).
+- **Looping MP4/WebM video output**: Full resolution, with configurable repetitions.
+- **Export crop**: Draw a crop box on the preview and apply it before scaling, Topaz interpolation, and export.
+- **Topaz Apollo Fast slowdown on macOS**: When Topaz Video's bundled `ffmpeg` is detected, export with Apollo Fast slow motion from 2x to 8x.
+- **Preview cadence overlay**: Preview approximates the slowed-down source-frame cadence and displays the effective preview frame rate.
 - **Cross-platform**: Runs on Windows, Linux, and macOS.
-- **Command-line interface**: For automation and scripting.
 
 ## Installation
 
@@ -97,8 +99,22 @@ If you want to build the app yourself:
 - **Slice** the image using grid in the top left
 - **Click on the image** where you want the center of the wiggle to be
 - **Scroll** to change the size of the area to focus on and refine the wiggle
-- **Choose** the output scale and fps
+- **Choose** the output scale, fps, and number of video repetitions
+- **Set Crop** to draw an export crop over the preview; use **Clear Crop** to remove it
+- **Topaz Slowdown** appears on macOS when Topaz Video is installed, and uses Apollo Fast for 2x-8x slow motion
 - **Export as** GIF or MP4 or WebM
+
+### Topaz Slowdown
+
+On macOS, Wigglegram Creator looks for Topaz Video's bundled `ffmpeg` at:
+
+```text
+/Applications/Topaz Video.app/Contents/MacOS/ffmpeg
+```
+
+If found, the GUI shows **Topaz Slowdown**. The app interpolates only the forward frame sequence once, then reuses those frames for pingpong and repeated video exports. For example, a 4-frame sequence in pingpong mode is interpolated as `1-2-3-4` first, then mirrored to create the reverse half.
+
+The default export settings are 30 fps, 4x slowdown, and 10 repetitions. With 30 fps and 4x slowdown, the preview cadence is approximately 7.5 source frames per second.
 
 ## TODO
 - fix automated build of executable

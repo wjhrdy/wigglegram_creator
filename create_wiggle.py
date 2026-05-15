@@ -2,6 +2,8 @@ import sys
 from PIL import Image, ImageDraw
 import imageio
 import os
+import subprocess
+import tempfile
 from skimage.registration import phase_cross_correlation
 from scipy.ndimage import zoom
 
@@ -29,6 +31,43 @@ def scale_image(image, scale_factor):
 
     return scaled_image
 
+
+def ensure_rgb_uint8(frame):
+    arr = np.asarray(frame)
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)
+    elif arr.shape[-1] == 4:
+        arr = arr[..., :3]
+    return arr
+
+
+def ensure_even_frame_size(frame):
+    width, height = frame.size
+    even_width = width - (width % 2)
+    even_height = height - (height % 2)
+    if even_width <= 0 or even_height <= 0:
+        return frame
+    if even_width == width and even_height == height:
+        return frame
+    return frame.crop((0, 0, even_width, even_height))
+
+
+def write_video_with_imageio(path, frames, fps, codec, ffmpeg_params=None):
+    video_frames = [ensure_rgb_uint8(ensure_even_frame_size(frame)) for frame in frames]
+    with imageio.get_writer(
+        path,
+        fps=fps,
+        codec=codec,
+        quality=8,
+        format="ffmpeg",
+        macro_block_size=2,
+        ffmpeg_params=ffmpeg_params or [],
+    ) as writer:
+        for frame in video_frames:
+            writer.append_data(frame)
+
 def crop_images(image_array, crop_size):
     cropped_images = []
 
@@ -50,6 +89,153 @@ def crop_images(image_array, crop_size):
         cropped_images.append(cropped_img)
 
     return cropped_images
+
+
+TOPAZ_FFMPEG_PATHS = [
+    "/Applications/Topaz Video.app/Contents/MacOS/ffmpeg",
+    "/Applications/Topaz Video AI.app/Contents/MacOS/ffmpeg",
+]
+
+TOPAZ_APOLLO_FAST_MODEL = "apf-2"
+TOPAZ_APOLLO_FAST_DISPLAY_NAME = "Apollo Fast"
+
+
+def find_topaz_ffmpeg():
+    """Return the local Topaz Video ffmpeg path if it is installed."""
+    if sys.platform != "darwin":
+        return None
+
+    env_path = os.environ.get("TOPAZ_VIDEO_FFMPEG")
+    candidates = [env_path] if env_path else []
+    candidates.extend(TOPAZ_FFMPEG_PATHS)
+
+    for path in candidates:
+        if path and os.path.exists(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def is_topaz_available():
+    return find_topaz_ffmpeg() is not None
+
+
+def find_topaz_model_dir(topaz_ffmpeg):
+    """Return the model directory that belongs to the local Topaz Video install."""
+    app_root = os.path.abspath(os.path.join(os.path.dirname(topaz_ffmpeg), ".."))
+    model_dir = os.path.join(app_root, "Resources", "models")
+    if os.path.isdir(model_dir):
+        return model_dir
+    return None
+
+
+def interpolate_frames_with_topaz(frames, in_between_count, model=TOPAZ_APOLLO_FAST_MODEL):
+    """
+    Expand a forward frame list using Topaz Video AI frame interpolation.
+
+    The app only runs Topaz on the one-way frame sequence. Pingpong and repeated
+    exports then reuse this expanded sequence so the reverse direction is not
+    interpolated independently.
+    """
+    in_between_count = int(in_between_count or 0)
+    if in_between_count <= 0 or len(frames) < 2:
+        return frames
+
+    topaz_ffmpeg = find_topaz_ffmpeg()
+    if not topaz_ffmpeg:
+        raise FileNotFoundError(
+            "Topaz Video ffmpeg was not found. Set TOPAZ_VIDEO_FFMPEG or install Topaz Video."
+        )
+
+    expected_count = ((len(frames) - 1) * (in_between_count + 1)) + 1
+    source_fps = 4
+    target_fps = source_fps * (in_between_count + 1)
+    topaz_input_frames = list(frames)
+    while len(topaz_input_frames) < 4:
+        topaz_input_frames.append(topaz_input_frames[-1])
+
+    with tempfile.TemporaryDirectory(prefix="wigglegram_topaz_") as temp_dir:
+        input_dir = os.path.join(temp_dir, "input")
+        output_dir = os.path.join(temp_dir, "output")
+        os.makedirs(input_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        for i, frame in enumerate(topaz_input_frames):
+            frame.convert("RGB").save(os.path.join(input_dir, f"frame_{i:06d}.png"))
+
+        input_pattern = os.path.join(input_dir, "frame_%06d.png")
+        input_video_path = os.path.join(temp_dir, "input.mov")
+        output_pattern = os.path.join(output_dir, "frame_%06d.png")
+        filter_spec = f"tvai_fi=model={model}:fps={target_fps}:rdt=-0.01"
+
+        encode_command = [
+            topaz_ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-framerate",
+            str(source_fps),
+            "-i",
+            input_pattern,
+            "-c:v",
+            "prores_ks",
+            "-profile:v",
+            "3",
+            input_video_path,
+        ]
+        print(f"[topaz] Encoding input: {' '.join(encode_command)}")
+        encode_result = subprocess.run(encode_command, capture_output=True, text=True)
+        if encode_result.returncode != 0:
+            details = (encode_result.stderr or encode_result.stdout or "").strip()
+            if len(details) > 2000:
+                details = details[-2000:]
+            raise RuntimeError(f"Topaz input encoding failed: {details}")
+
+        command = [
+            topaz_ffmpeg,
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-i",
+            input_video_path,
+            "-vf",
+            filter_spec,
+            "-start_number",
+            "0",
+            output_pattern,
+        ]
+
+        print(f"[topaz] Running: {' '.join(command)}")
+        env = os.environ.copy()
+        model_dir = find_topaz_model_dir(topaz_ffmpeg)
+        if model_dir:
+            env.setdefault("TVAI_MODEL_DIR", model_dir)
+            env.setdefault("TVAI_MODEL_DATA_DIR", model_dir)
+
+        result = subprocess.run(command, capture_output=True, text=True, env=env)
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            if len(details) > 2000:
+                details = details[-2000:]
+            raise RuntimeError(f"Topaz interpolation failed: {details}")
+
+        output_paths = sorted(
+            os.path.join(output_dir, name)
+            for name in os.listdir(output_dir)
+            if name.lower().endswith(".png")
+        )
+        if not output_paths:
+            raise RuntimeError("Topaz interpolation did not produce any frames.")
+
+        interpolated = [Image.open(path).convert("RGB").copy() for path in output_paths]
+
+    if len(interpolated) == expected_count:
+        return interpolated
+
+    print(f"[topaz] Expected {expected_count} frames, got {len(interpolated)}. Resampling output.")
+    if len(interpolated) > expected_count:
+        return interpolated[:expected_count]
+
+    return interpolated
 
 # --- Centralized Gaussian Mask Parameters ---
 # Smaller sigma = more focused weighting on the clicked point
@@ -338,9 +524,10 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     
     # Get output parameters from image attributes if available
     output_resolution = getattr(image, 'output_resolution', "1920×1080")
-    output_fps = getattr(image, 'output_fps', 8.0)
+    output_fps = getattr(image, 'output_fps', 30.0)
+    output_repetitions = getattr(image, 'output_repetitions', 10)
     
-    print(f"[slice_and_create_gif] Using output resolution: {output_resolution}, fps: {output_fps}")
+    print(f"[slice_and_create_gif] Using output resolution: {output_resolution}, fps: {output_fps}, repetitions: {output_repetitions}")
 
     # Get the width and height of the image
     width, height = image.size
@@ -593,8 +780,8 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     pingpong_mode = getattr(image, 'pingpong_mode', True)
     
     gif_seq = make_pingpong(gif_frames, pingpong_mode)
-    # Get frame rate from image attribute if available, default to 8 fps
-    fps = getattr(image, 'output_fps', 8.0)
+    # Get frame rate from image attribute if available, default to 30 fps
+    fps = getattr(image, 'output_fps', 30.0)
     # Convert fps to duration (in seconds) for GIF
     duration = 1.0 / fps
     
@@ -602,7 +789,8 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
 
     mp4_seq = make_pingpong(mp4_frames, pingpong_mode)
     webm_seq = make_pingpong(webm_frames, pingpong_mode)
-    pingpong_frames = mp4_seq * 10  # Repeat 10 times
+    repeat_count = max(1, int(getattr(image, 'output_repetitions', 10)))
+    pingpong_frames = mp4_seq * repeat_count
 
     # Save as MP4
     mp4_path = output_gif_path.replace('.gif', '.mp4')
@@ -617,8 +805,8 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         return arr
     success = False
     try:
-        # Get frame rate from image attribute if available, default to 8 fps
-        fps = getattr(image, 'output_fps', 8.0)
+        # Get frame rate from image attribute if available, default to 30 fps
+        fps = getattr(image, 'output_fps', 30.0)
         with imageio.get_writer(mp4_path, fps=fps, codec='libx264', quality=8, format='ffmpeg') as writer:
             for frame in pingpong_frames:
                 writer.append_data(ensure_rgb_uint8(frame))
@@ -627,8 +815,8 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         print(f"libx264 failed: {e}\nTrying mpeg4 fallback...")
     if not success:
         try:
-            # Get frame rate from image attribute if available, default to 8 fps
-            fps = getattr(image, 'output_fps', 8.0)
+            # Get frame rate from image attribute if available, default to 30 fps
+            fps = getattr(image, 'output_fps', 30.0)
             with imageio.get_writer(mp4_path, fps=fps, codec='mpeg4', quality=8, format='ffmpeg') as writer:
                 for frame in pingpong_frames:
                     writer.append_data(ensure_rgb_uint8(frame))
@@ -640,11 +828,11 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     
     # Save as WebM (downscaled but 2x larger than GIF)
     webm_path = output_gif_path.replace('.gif', '.webm')
-    webm_pingpong_frames = webm_seq * 10  # Repeat 10 times
+    webm_pingpong_frames = webm_seq * repeat_count
     webm_success = False
     try:
-        # Get frame rate from image attribute if available, default to 8 fps
-        fps = getattr(image, 'output_fps', 8.0)
+        # Get frame rate from image attribute if available, default to 30 fps
+        fps = getattr(image, 'output_fps', 30.0)
         with imageio.get_writer(webm_path, fps=fps, codec='vp9', quality=8, format='ffmpeg') as writer:
             for frame in webm_pingpong_frames:
                 writer.append_data(ensure_rgb_uint8(frame))
@@ -653,8 +841,8 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
         print(f"vp9 failed: {e}\nTrying vp8 fallback...")
     if not webm_success:
         try:
-            # Get frame rate from image attribute if available, default to 8 fps
-            fps = getattr(image, 'output_fps', 8.0)
+            # Get frame rate from image attribute if available, default to 30 fps
+            fps = getattr(image, 'output_fps', 30.0)
             with imageio.get_writer(webm_path, fps=fps, codec='vp8', quality=8, format='ffmpeg') as writer:
                 for frame in webm_pingpong_frames:
                     writer.append_data(ensure_rgb_uint8(frame))
@@ -667,7 +855,7 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
     print(f"Aligned and animated GIF saved at {output_gif_path}")
 
 from PySide6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QFileDialog, QPushButton, QHBoxLayout, QSpacerItem, QSizePolicy
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QRect
 from PySide6.QtGui import QPixmap, QImage, QMouseEvent, QKeyEvent
 import sys
 
@@ -748,10 +936,21 @@ class DropLabel(QLabel):
         self.expanded_grid_start_cell = (0, 0)
         self.expanded_grid_end_cell = (0, 0)
         self.webm_button = None
+        self.crop_mode = False
+        self.crop_start_pos = None
+        self.crop_current_pos = None
+        self.crop_rect = None
+        self.crop_button = None
+        self.clear_crop_button = None
+        self.topaz_available = is_topaz_available()
         
         # Output parameters
         self.output_resolution = "1920×1080"  # Default to 1080p
-        self.output_fps = 8.0  # Default to 8 fps
+        self.output_fps = 30.0  # Default to 30 fps
+        self.output_repetitions = 10  # Default video repetitions
+        self.topaz_interpolation_frames = 0  # Number of generated frames between each forward pair
+        self.topaz_slowmo_factor = 0  # 0 disables Topaz, otherwise 2x-8x slow motion
+        self.topaz_interpolation_model = TOPAZ_APOLLO_FAST_MODEL
         self.original_resolution = None  # Will store the original resolution for reference
 
         # Set up animation timer
@@ -939,15 +1138,41 @@ class DropLabel(QLabel):
         ]
         self.fps_combo.addItems(self.fps_options)
         
-        # Set default to 8 fps
-        self.fps_combo.setCurrentIndex(0)  # 8 fps
+        # Set default to 30 fps
+        self.fps_combo.setCurrentText("30")
         self.fps_combo.setToolTip("Select output frame rate (fps)")
         fps_row.addWidget(self.fps_label)
         fps_row.addWidget(self.fps_combo)
+
+        repetitions_row = QHBoxLayout()
+        self.repetitions_label = QLabel("Repetitions:")
+        self.repetitions_spinbox = QSpinBox()
+        self.repetitions_spinbox.setRange(1, 999)
+        self.repetitions_spinbox.setValue(10)
+        self.repetitions_spinbox.setToolTip("Number of times to repeat the animation sequence in MP4/WebM exports")
+        self.repetitions_spinbox.valueChanged.connect(self.update_output_parameters)
+        repetitions_row.addWidget(self.repetitions_label)
+        repetitions_row.addWidget(self.repetitions_spinbox)
+
+        if self.topaz_available:
+            interpolation_row = QHBoxLayout()
+            self.topaz_interpolation_label = QLabel("Topaz Slowdown:")
+            self.topaz_slowmo_combo = QComboBox()
+            self.topaz_slowmo_combo.addItem("Off", 0)
+            for factor in range(2, 9):
+                self.topaz_slowmo_combo.addItem(f"{factor}x", factor)
+            self.topaz_slowmo_combo.setCurrentText("4x")
+            self.topaz_slowmo_combo.setToolTip("Apply Topaz Apollo Fast slow motion before export. 4x adds 3 generated frames between each forward frame pair.")
+            self.topaz_slowmo_combo.currentIndexChanged.connect(self.update_output_parameters)
+            interpolation_row.addWidget(self.topaz_interpolation_label)
+            interpolation_row.addWidget(self.topaz_slowmo_combo)
         
         # Add rows to the output layout
         output_layout.addLayout(resolution_row)
         output_layout.addLayout(fps_row)
+        output_layout.addLayout(repetitions_row)
+        if self.topaz_available:
+            output_layout.addLayout(interpolation_row)
         
         # Add the output group to the main button layout
         self.button_layout.addWidget(output_group)
@@ -959,6 +1184,21 @@ class DropLabel(QLabel):
         self.pingpong_checkbox.setToolTip("Toggle between forward-backward (12321) and forward-only (123123) animation")
         self.pingpong_checkbox.stateChanged.connect(self.toggle_pingpong_mode)
         self.button_layout.addWidget(self.pingpong_checkbox)
+
+        self.crop_button = QPushButton("Set Crop")
+        self.crop_button.setCheckable(True)
+        self.crop_button.setEnabled(False)
+        crop_tooltip = "Drag a crop box on the preview. The crop is applied before export."
+        if self.topaz_available:
+            crop_tooltip = "Drag a crop box on the preview. The crop is applied before Topaz and export."
+        self.crop_button.setToolTip(crop_tooltip)
+        self.crop_button.toggled.connect(self.toggle_crop_mode)
+        self.button_layout.addWidget(self.crop_button)
+
+        self.clear_crop_button = QPushButton("Clear Crop")
+        self.clear_crop_button.setEnabled(False)
+        self.clear_crop_button.clicked.connect(self.clear_export_crop)
+        self.button_layout.addWidget(self.clear_crop_button)
         
         load_button = QPushButton("Load Image")
         load_button.clicked.connect(self.load_image_dialog)
@@ -983,6 +1223,125 @@ class DropLabel(QLabel):
         self.export_frames_button.clicked.connect(self.export_frames)
         self.export_frames_button.setEnabled(False)
         self.button_layout.addWidget(self.export_frames_button)
+
+    def toggle_crop_mode(self, enabled):
+        """Toggle export crop selection mode."""
+        self.crop_mode = enabled
+        self.selecting_alignment_point = False
+        self.crop_start_pos = None
+        self.crop_current_pos = None
+        if self.crop_button:
+            self.crop_button.setText("Drag Crop" if enabled else "Set Crop")
+        if enabled:
+            self.animation_timer.stop()
+            self.update_status("Drag a crop box on the preview.")
+        else:
+            if self.qpixmaps:
+                self.restart_animation_timer()
+            if self.crop_rect:
+                left, top, right, bottom = self.crop_rect
+                self.update_status(f"Crop set: {right - left}×{bottom - top}")
+            else:
+                self.update_status("Crop selection off.")
+        self.update()
+
+    def clear_export_crop(self):
+        """Clear the export crop rectangle."""
+        self.crop_rect = None
+        self.crop_start_pos = None
+        self.crop_current_pos = None
+        if self.clear_crop_button:
+            self.clear_crop_button.setEnabled(False)
+        self.update_status("Crop cleared.")
+        self.update()
+
+    def get_displayed_pixmap_info(self):
+        """Return display and frame geometry for mapping widget points to frame pixels."""
+        if not (hasattr(self, 'qpixmaps') and self.qpixmaps and self.aligned_frames):
+            return None
+
+        pixmap = self.qpixmaps[self.current_frame_idx % len(self.qpixmaps)]
+        pixmap_w, pixmap_h = pixmap.width(), pixmap.height()
+        if pixmap_w <= 0 or pixmap_h <= 0:
+            return None
+
+        frame = self.aligned_frames[0]
+        frame_w, frame_h = frame.size
+        offset_x = max(0, (self.width() - pixmap_w) / 2)
+        offset_y = max(0, (self.height() - pixmap_h) / 2)
+        return offset_x, offset_y, pixmap_w, pixmap_h, frame_w, frame_h
+
+    def widget_point_to_frame_point(self, point):
+        """Map a widget point to a clamped point in the current frame."""
+        info = self.get_displayed_pixmap_info()
+        if not info:
+            return None
+
+        offset_x, offset_y, pixmap_w, pixmap_h, frame_w, frame_h = info
+        rel_x = point.x() - offset_x
+        rel_y = point.y() - offset_y
+        if rel_x < 0 or rel_y < 0 or rel_x > pixmap_w or rel_y > pixmap_h:
+            return None
+
+        frame_x = int(round(rel_x * frame_w / pixmap_w))
+        frame_y = int(round(rel_y * frame_h / pixmap_h))
+        frame_x = max(0, min(frame_x, frame_w))
+        frame_y = max(0, min(frame_y, frame_h))
+        return frame_x, frame_y
+
+    def frame_rect_to_widget_rect(self, rect):
+        """Map a frame crop rect to widget coordinates for drawing."""
+        info = self.get_displayed_pixmap_info()
+        if not info or not rect:
+            return None
+
+        offset_x, offset_y, pixmap_w, pixmap_h, frame_w, frame_h = info
+        left, top, right, bottom = rect
+        x = offset_x + (left * pixmap_w / frame_w)
+        y = offset_y + (top * pixmap_h / frame_h)
+        w = (right - left) * pixmap_w / frame_w
+        h = (bottom - top) * pixmap_h / frame_h
+        return QRect(int(round(x)), int(round(y)), int(round(w)), int(round(h)))
+
+    def set_crop_from_widget_points(self, start_point, end_point):
+        """Store a crop rectangle selected on the displayed frame."""
+        start = self.widget_point_to_frame_point(start_point)
+        end = self.widget_point_to_frame_point(end_point)
+        if not start or not end:
+            return False
+
+        left = min(start[0], end[0])
+        top = min(start[1], end[1])
+        right = max(start[0], end[0])
+        bottom = max(start[1], end[1])
+        if right - left < 8 or bottom - top < 8:
+            self.crop_rect = None
+            if self.clear_crop_button:
+                self.clear_crop_button.setEnabled(False)
+            self.update_status("Crop cleared.")
+            return False
+
+        self.crop_rect = (left, top, right, bottom)
+        if self.clear_crop_button:
+            self.clear_crop_button.setEnabled(True)
+        self.update_status(f"Crop set: {right - left}×{bottom - top}")
+        return True
+
+    def apply_export_crop(self, frames):
+        """Crop export frames before scaling and Topaz processing."""
+        if not self.crop_rect:
+            return frames
+
+        cropped_frames = []
+        left, top, right, bottom = self.crop_rect
+        for frame in frames:
+            frame_w, frame_h = frame.size
+            safe_left = max(0, min(left, frame_w - 1))
+            safe_top = max(0, min(top, frame_h - 1))
+            safe_right = max(safe_left + 1, min(right, frame_w))
+            safe_bottom = max(safe_top + 1, min(bottom, frame_h))
+            cropped_frames.append(frame.crop((safe_left, safe_top, safe_right, safe_bottom)))
+        return cropped_frames
     
     def update_sigma_from_spinbox(self, value):
         """Update the current_sigma value when the spinbox changes."""
@@ -1006,7 +1365,7 @@ class DropLabel(QLabel):
             if self.qpixmaps:
                 self.current_frame_idx = 0
                 self.setPixmap(self.qpixmaps[0])
-                self.animation_timer.start(125)
+                self.restart_animation_timer()
 
     def update_status(self, message):
         """Updates the text of the status label."""
@@ -1014,6 +1373,30 @@ class DropLabel(QLabel):
             self.status_label.setText(message)
         else:
             print(f"Status Update (no label): {message}")
+
+    def get_preview_slowmo_factor(self):
+        """Return the selected slowdown factor for preview timing."""
+        factor = self.get_topaz_slowmo_factor()
+        return factor if factor > 1 else 1
+
+    def get_preview_interval_ms(self):
+        """Return the preview timer interval, approximating Topaz slowdown."""
+        fps = self.get_selected_fps()
+        factor = self.get_preview_slowmo_factor()
+        return max(1, int(1000 * factor / fps))
+
+    def get_effective_preview_fps(self):
+        """Return the approximate source-frame cadence after slowdown interpolation."""
+        return self.get_selected_fps() / self.get_preview_slowmo_factor()
+
+    def restart_animation_timer(self):
+        """Restart the animation timer using current fps and slowdown settings."""
+        if not hasattr(self, 'animation_timer'):
+            return
+        if not self.qpixmaps:
+            self.animation_timer.stop()
+            return
+        self.animation_timer.start(self.get_preview_interval_ms())
 
     def prepare_animation(self, weight_point=None):
         self.last_weight_point = weight_point
@@ -1096,10 +1479,7 @@ class DropLabel(QLabel):
         self.current_frame_idx = 0
         if self.qpixmaps:
             self.setPixmap(self.qpixmaps[0])
-        # Calculate timer interval based on selected fps
-        fps = self.get_selected_fps()
-        interval = int(1000 / fps)  # Convert fps to milliseconds
-        self.animation_timer.start(interval)
+        self.restart_animation_timer()
 
     def prepare_animation_frames(self):
         """Prepares scaled QPixmap frames for animation, using pingpong or forward-only mode."""
@@ -1264,6 +1644,15 @@ class DropLabel(QLabel):
             
             # Continue with normal processing
             self.alignment_point = None # Reset alignment point on new image
+            self.crop_rect = None
+            self.crop_start_pos = None
+            self.crop_current_pos = None
+            self.crop_mode = False
+            if self.crop_button:
+                self.crop_button.setChecked(False)
+                self.crop_button.setText("Set Crop")
+            if self.clear_crop_button:
+                self.clear_crop_button.setEnabled(False)
             self.manual_grid_override = False  # Reset to FFT mode on new image
             
             # Store the original resolution for reference
@@ -1286,6 +1675,8 @@ class DropLabel(QLabel):
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
+            if self.crop_button: self.crop_button.setEnabled(False)
+            if self.clear_crop_button: self.clear_crop_button.setEnabled(False)
             if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(False)
             return
             
@@ -1307,6 +1698,8 @@ class DropLabel(QLabel):
                 self.image.output_resolution = self.output_resolution
             if hasattr(self, 'output_fps'):
                 self.image.output_fps = self.output_fps
+            if hasattr(self, 'output_repetitions'):
+                self.image.output_repetitions = self.output_repetitions
             # Slice the image into frames
             frames = self.slice_image() # Get initial frames
             print(f"[dropEvent] Num frames from slice_image: {len(frames)}")
@@ -1349,16 +1742,15 @@ class DropLabel(QLabel):
             if self.qpixmaps:
                 self.current_frame_idx = 0
                 self.setPixmap(self.qpixmaps[0])
-                # Calculate timer interval based on selected fps
-                fps = self.get_selected_fps()
-                interval = int(1000 / fps)  # Convert fps to milliseconds
-                self.animation_timer.start(interval)
+                self.restart_animation_timer()
                 # Use current_path which is set for both single and multiple file cases
                 self.update_status(f"Loaded: {os.path.basename(self.current_path)}. Click a point to align.")
                 # Enable save buttons only after successful load and frame prep
                 if self.gif_button: self.gif_button.setEnabled(True)
                 if self.mp4_button: self.mp4_button.setEnabled(True)
                 if self.webm_button: self.webm_button.setEnabled(True)
+                if self.crop_button: self.crop_button.setEnabled(True)
+                if self.clear_crop_button: self.clear_crop_button.setEnabled(False)
                 if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(True)
             else:
                 print("[dropEvent] No QPixmaps prepared.")
@@ -1376,6 +1768,8 @@ class DropLabel(QLabel):
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
+            if self.crop_button: self.crop_button.setEnabled(False)
+            if self.clear_crop_button: self.clear_crop_button.setEnabled(False)
             if hasattr(self, 'export_frames_button'): self.export_frames_button.setEnabled(False)
             # This code block seems to be unreachable since we've already returned from the function
             # and qpixmaps would be empty at this point, but let's fix it anyway
@@ -1589,10 +1983,7 @@ class DropLabel(QLabel):
                 if self.qpixmaps:
                     self.current_frame_idx = 0
                     self.setPixmap(self.qpixmaps[self.current_frame_idx])
-                    # Calculate timer interval based on selected fps
-                    fps = self.get_selected_fps()
-                    interval = int(1000 / fps)  # Convert fps to milliseconds
-                    self.animation_timer.start(interval)
+                    self.restart_animation_timer()
             except Exception as e:
                 print(f"[trigger_alignment] Error during alignment: {e}")
                 import traceback
@@ -1667,16 +2058,19 @@ class DropLabel(QLabel):
                 # Scale frames to the target resolution
                 if self.aligned_frames and len(self.aligned_frames) > 0:
                     frames = []
-                    first_frame = self.aligned_frames[0]
+                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
                     print(f"[save_gif] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
                     
-                    for frame in self.aligned_frames:
+                    for frame in export_frames:
                         scaled_frame = scale_image(frame, scale_factor * 0.5)  # GIF at half resolution
                         frames.append(scaled_frame)
                 else:
                     frames = self.aligned_frames[:]
+
+                frames = self.apply_topaz_interpolation_for_export(frames)
                 
                 # Create animation sequence based on pingpong_mode
                 if len(frames) <= 1:
@@ -1736,61 +2130,59 @@ class DropLabel(QLabel):
             if not file_path.lower().endswith('.mp4'):
                 file_path += '.mp4'
             try:
-                import cv2
-                import numpy as np
-                
                 # Get the selected resolution
                 target_height = self.get_selected_resolution_height()
                 
                 # Scale frames to the target resolution
                 if self.aligned_frames and len(self.aligned_frames) > 0:
                     scaled_frames = []
-                    first_frame = self.aligned_frames[0]
+                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
                     print(f"[save_mp4] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
                     
-                    for frame in self.aligned_frames:
+                    for frame in export_frames:
                         scaled_frame = scale_image(frame, scale_factor)
                         scaled_frames.append(scaled_frame)
                 else:
                     scaled_frames = self.aligned_frames[:]
-                
-                # Convert to cv2 format
-                cv2_frames = []
-                for frame in scaled_frames:
-                    np_frame = np.array(frame)
-                    cv2_frame = cv2.cvtColor(np_frame, cv2.COLOR_RGB2BGR)
-                    cv2_frames.append(cv2_frame)
+
+                scaled_frames = self.apply_topaz_interpolation_for_export(scaled_frames)
                 
                 # Report the actual output resolution
-                if cv2_frames and len(cv2_frames) > 0:
-                    height, width = cv2_frames[0].shape[:2]
+                if scaled_frames and len(scaled_frames) > 0:
+                    width, height = ensure_even_frame_size(scaled_frames[0]).size
                     print(f"[save_mp4] Output MP4 resolution: {width}×{height}")
                 
                 # Create animation sequence based on pingpong_mode
-                if len(cv2_frames) <= 1:
-                    animation_frames = cv2_frames * 4
+                if len(scaled_frames) <= 1:
+                    animation_frames = scaled_frames * 4
                 elif self.pingpong_mode:
                     # Forward and backward (12321)
-                    animation_frames = cv2_frames + cv2_frames[-2:0:-1]
+                    animation_frames = scaled_frames + scaled_frames[-2:0:-1]
                     print("[save_mp4] Using pingpong mode (forward-backward)")
                 else:
                     # Forward only (123123)
-                    animation_frames = cv2_frames * 2
+                    animation_frames = scaled_frames * 2
                     print("[save_mp4] Using forward-only mode")
                 
-                # Repeat the animation sequence 10 times
-                animation_frames = animation_frames * 10
+                repeat_count = self.get_selected_repetition_count()
+                animation_frames = animation_frames * repeat_count
                 
-                height, width = animation_frames[0].shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 # Get the selected frame rate
                 fps = self.get_selected_fps()
-                out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
-                for frame in animation_frames:
-                    out.write(frame)
-                out.release()
+                try:
+                    write_video_with_imageio(
+                        file_path,
+                        animation_frames,
+                        fps,
+                        "libx264",
+                        ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+                    )
+                except Exception as h264_error:
+                    print(f"libx264 failed: {h264_error}\nTrying mpeg4 fallback...")
+                    write_video_with_imageio(file_path, animation_frames, fps, "mpeg4")
                 
                 animation_type = "forward-backward" if self.pingpong_mode else "forward-only"
                 self.update_status(f"Saved {animation_type} MP4 to: {file_path}")
@@ -1827,9 +2219,6 @@ class DropLabel(QLabel):
             if not file_path.lower().endswith('.webm'):
                 file_path += '.webm'
             try:
-                import cv2
-                import numpy as np
-                
                 # Use the webm_frames which are downscaled to 0.4 (2x the GIF size)
                 # First, create the webm frames from the aligned frames
                 # Get the selected resolution
@@ -1837,46 +2226,42 @@ class DropLabel(QLabel):
                 
                 # Calculate scaling factor based on the first frame's height
                 if self.aligned_frames and len(self.aligned_frames) > 0:
-                    first_frame = self.aligned_frames[0]
+                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
                     print(f"[save_webm] Scaling frames to match {target_height}px height (scale factor: {scale_factor:.2f})")
                     
                     # Scale frames to the target resolution
-                    webm_frames = [scale_image(image, scale_factor) for image in self.aligned_frames]
+                    webm_frames = [scale_image(image, scale_factor) for image in export_frames]
                 else:
                     # Fallback to old behavior if no frames
                     webm_frames = [scale_image(image, 0.4) for image in self.aligned_frames]
-                
-                cv2_frames = []
-                for frame in webm_frames:
-                    np_frame = np.array(frame)
-                    cv2_frame = cv2.cvtColor(np_frame, cv2.COLOR_RGB2BGR)
-                    cv2_frames.append(cv2_frame)
+
+                webm_frames = self.apply_topaz_interpolation_for_export(webm_frames)
                 
                 # Create animation sequence based on pingpong_mode
-                if len(cv2_frames) <= 1:
-                    animation_frames = cv2_frames * 4
+                if len(webm_frames) <= 1:
+                    animation_frames = webm_frames * 4
                 elif self.pingpong_mode:
                     # Forward and backward (12321)
-                    animation_frames = cv2_frames + cv2_frames[-2:0:-1]
+                    animation_frames = webm_frames + webm_frames[-2:0:-1]
                     print("[save_webm] Using pingpong mode (forward-backward)")
                 else:
                     # Forward only (123123)
-                    animation_frames = cv2_frames * 2
+                    animation_frames = webm_frames * 2
                     print("[save_webm] Using forward-only mode")
                 
-                # Repeat the animation sequence 10 times
-                animation_frames = animation_frames * 10
+                repeat_count = self.get_selected_repetition_count()
+                animation_frames = animation_frames * repeat_count
                 
-                height, width = animation_frames[0].shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*'VP90')  # WebM codec
                 # Get the selected frame rate
                 fps = self.get_selected_fps()
-                out = cv2.VideoWriter(file_path, fourcc, fps, (width, height))
-                for frame in animation_frames:
-                    out.write(frame)
-                out.release()
+                try:
+                    write_video_with_imageio(file_path, animation_frames, fps, "vp9")
+                except Exception as vp9_error:
+                    print(f"vp9 failed: {vp9_error}\nTrying vp8 fallback...")
+                    write_video_with_imageio(file_path, animation_frames, fps, "vp8")
                 
                 animation_type = "forward-backward" if self.pingpong_mode else "forward-only"
                 self.update_status(f"Saved {animation_type} WebM to: {file_path}")
@@ -1920,18 +2305,24 @@ class DropLabel(QLabel):
             target_height = self.get_selected_resolution_height()
             
             # Export each frame at full resolution
-            for i, frame in enumerate(self.aligned_frames):
+            frames_to_export = []
+            export_frames = self.apply_export_crop(self.aligned_frames)
+            for i, frame in enumerate(export_frames):
                 # Scale frame to target resolution
                 original_height = frame.height
                 scale_factor = target_height / original_height
                 scaled_frame = scale_image(frame, scale_factor)
-                
+                frames_to_export.append(scaled_frame)
+
+            frames_to_export = self.apply_topaz_interpolation_for_export(frames_to_export)
+
+            for i, scaled_frame in enumerate(frames_to_export):
                 # Save the frame
                 frame_path = os.path.join(export_dir, f"frame_{i+1:03d}.png")
                 scaled_frame.save(frame_path, format="PNG")
                 
             # Report success
-            num_frames = len(self.aligned_frames)
+            num_frames = len(frames_to_export)
             self.update_status(f"Exported {num_frames} frames to: {export_dir}")
             
         except Exception as e:
@@ -2070,6 +2461,61 @@ class DropLabel(QLabel):
             text = f"Grid: {grid_cols}x{grid_rows}"
             painter.setPen(QPen(QColor(0, 0, 0), 2))  # Black text
             painter.drawText(border_x + 5, border_y + border_height + 20, text)
+
+        active_crop_rect = None
+        if self.crop_mode and self.crop_start_pos is not None and self.crop_current_pos is not None:
+            start = self.widget_point_to_frame_point(self.crop_start_pos)
+            end = self.widget_point_to_frame_point(self.crop_current_pos)
+            if start and end:
+                left = min(start[0], end[0])
+                top = min(start[1], end[1])
+                right = max(start[0], end[0])
+                bottom = max(start[1], end[1])
+                active_crop_rect = (left, top, right, bottom)
+
+        crop_widget_rect = self.frame_rect_to_widget_rect(active_crop_rect or self.crop_rect)
+        if crop_widget_rect:
+            painter.setBrush(QBrush(QColor(0, 0, 0, 65)))
+            painter.setPen(Qt.NoPen)
+            info = self.get_displayed_pixmap_info()
+            if info:
+                offset_x, offset_y, pixmap_w, pixmap_h, _, _ = info
+                image_rect = QRect(int(offset_x), int(offset_y), int(pixmap_w), int(pixmap_h))
+                crop_widget_rect = crop_widget_rect.intersected(image_rect)
+                top_h = max(0, crop_widget_rect.top() - image_rect.top())
+                bottom_y = crop_widget_rect.bottom() + 1
+                bottom_h = max(0, image_rect.bottom() - crop_widget_rect.bottom())
+                left_w = max(0, crop_widget_rect.left() - image_rect.left())
+                right_x = crop_widget_rect.right() + 1
+                right_w = max(0, image_rect.right() - crop_widget_rect.right())
+                painter.drawRect(image_rect.left(), image_rect.top(), image_rect.width(), top_h)
+                painter.drawRect(image_rect.left(), bottom_y, image_rect.width(), bottom_h)
+                painter.drawRect(image_rect.left(), crop_widget_rect.top(), left_w, crop_widget_rect.height())
+                painter.drawRect(right_x, crop_widget_rect.top(), right_w, crop_widget_rect.height())
+
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(255, 220, 80), 3))
+            painter.drawRect(crop_widget_rect)
+
+        preview_factor = self.get_preview_slowmo_factor()
+        if preview_factor > 1:
+            effective_fps = self.get_effective_preview_fps()
+            fps_text = f"Preview cadence: {effective_fps:g} fps ({preview_factor}x slowdown)"
+            metrics = painter.fontMetrics()
+            text_width = metrics.horizontalAdvance(fps_text)
+            text_height = metrics.height()
+            padding_x = 10
+            padding_y = 6
+            box_width = text_width + padding_x * 2
+            box_height = text_height + padding_y * 2
+            box_x = max(8, self.width() - box_width - 12)
+            box_y = 12
+            painter.setBrush(QBrush(QColor(0, 0, 0, 170)))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(box_x, box_y, box_width, box_height, 6, 6)
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.drawText(box_x + padding_x, box_y + padding_y + metrics.ascent(), fps_text)
+
         painter.end()
 
     def show_next_frame(self):
@@ -2081,6 +2527,16 @@ class DropLabel(QLabel):
         """Handle mouse press events for grid interaction."""
         if not self.image:  # Only process if an image is loaded
             super().mousePressEvent(event)
+            return
+
+        if self.crop_mode:
+            point = event.position().toPoint()
+            if self.widget_point_to_frame_point(point):
+                self.crop_start_pos = point
+                self.crop_current_pos = point
+                self.cursor_pos = None
+                self.update_status("Selecting crop...")
+                self.update()
             return
             
         # Check if click is in the grid area
@@ -2120,6 +2576,12 @@ class DropLabel(QLabel):
     
     def mouseMoveEvent(self, event):
         """Handle mouse move events for grid interaction and hover mask display."""
+        if self.crop_mode:
+            if self.crop_start_pos is not None and event.buttons() & Qt.LeftButton:
+                self.crop_current_pos = event.position().toPoint()
+                self.update()
+            return
+
         if self.expanded_grid_active and event.buttons() & Qt.LeftButton:
             # Update the end cell for grid selection
             margin = 8
@@ -2181,6 +2643,17 @@ class DropLabel(QLabel):
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release events for grid interaction."""
+        if self.crop_mode:
+            if self.crop_start_pos is not None:
+                self.crop_current_pos = event.position().toPoint()
+                self.set_crop_from_widget_points(self.crop_start_pos, self.crop_current_pos)
+                self.crop_start_pos = None
+                self.crop_current_pos = None
+                if self.crop_button:
+                    self.crop_button.setChecked(False)
+                self.update()
+            return
+
         if self.expanded_grid_active:
             # Calculate the selected grid dimensions
             start_row, start_col = self.expanded_grid_start_cell
@@ -2204,6 +2677,14 @@ class DropLabel(QLabel):
             # Update grid dimensions
             self.grid_rows = new_rows
             self.grid_cols = new_cols
+            self.crop_rect = None
+            self.crop_start_pos = None
+            self.crop_current_pos = None
+            if self.crop_button:
+                self.crop_button.setChecked(False)
+                self.crop_button.setText("Set Crop")
+            if self.clear_crop_button:
+                self.clear_crop_button.setEnabled(False)
             
             # Enable manual grid override - ensure it's properly set as an instance attribute
             setattr(self, 'manual_grid_override', True)
@@ -2256,10 +2737,7 @@ class DropLabel(QLabel):
                     QApplication.processEvents()  # Process any pending events
                     
                     # Start with a slight delay to ensure UI is updated
-                    # Calculate timer interval based on selected fps
-                    fps = self.get_selected_fps()
-                    interval = int(1000 / fps)  # Convert fps to milliseconds
-                    self.animation_timer.start(interval)
+                    self.restart_animation_timer()
                     
                     print(f"[mouseReleaseEvent] Animation timer restarted with {len(self.qpixmaps)} frames")
             
@@ -2396,7 +2874,7 @@ class DropLabel(QLabel):
     def get_selected_fps(self):
         """Get the fps value from the selected frame rate option."""
         if not hasattr(self, 'fps_combo'):
-            return 8.0  # Default to 8 fps if combo box doesn't exist
+            return 30.0  # Default to 30 fps if combo box doesn't exist
             
         selected_text = self.fps_combo.currentText()
         try:
@@ -2406,7 +2884,61 @@ class DropLabel(QLabel):
             fps = float(fps_part)
             return fps
         except:
-            return 8.0  # Default to 8 fps if parsing fails
+            return 30.0  # Default to 30 fps if parsing fails
+
+    def get_selected_repetition_count(self):
+        """Get the number of times to repeat video animation sequences."""
+        if not hasattr(self, 'repetitions_spinbox'):
+            return 10
+        return max(1, self.repetitions_spinbox.value())
+
+    def get_topaz_interpolation_count(self):
+        """Get the selected Topaz in-between frame count."""
+        if not self.topaz_available:
+            return 0
+
+        if hasattr(self, 'topaz_slowmo_combo'):
+            factor = self.topaz_slowmo_combo.currentData()
+            if factor is None:
+                return 0
+            return max(0, int(factor) - 1)
+        if not hasattr(self, 'topaz_interpolation_spinbox'):
+            return 0
+        return self.topaz_interpolation_spinbox.value()
+
+    def get_topaz_slowmo_factor(self):
+        """Get the selected Topaz slow motion factor."""
+        if not self.topaz_available:
+            return 0
+
+        if not hasattr(self, 'topaz_slowmo_combo'):
+            return 0
+        factor = self.topaz_slowmo_combo.currentData()
+        return int(factor or 0)
+
+    def get_topaz_interpolation_model(self):
+        """Get the Topaz model short name."""
+        return TOPAZ_APOLLO_FAST_MODEL
+
+    def apply_topaz_interpolation_for_export(self, frames):
+        """Apply the selected Topaz interpolation setting to forward export frames."""
+        if not self.topaz_available:
+            return frames
+
+        in_between_count = self.get_topaz_interpolation_count()
+        if in_between_count <= 0:
+            return frames
+
+        slowmo_factor = self.get_topaz_slowmo_factor()
+        self.update_status(f"Applying Topaz {slowmo_factor}x slow motion with {TOPAZ_APOLLO_FAST_DISPLAY_NAME}...")
+        QApplication.processEvents()
+
+        expanded_frames = interpolate_frames_with_topaz(frames, in_between_count, model=TOPAZ_APOLLO_FAST_MODEL)
+        self.update_status(
+            f"Topaz {slowmo_factor}x slow motion: {len(frames)} -> {len(expanded_frames)} forward frames"
+        )
+        QApplication.processEvents()
+        return expanded_frames
             
     def update_output_parameters(self):
         """Update the output parameters based on UI selections."""
@@ -2418,18 +2950,27 @@ class DropLabel(QLabel):
             try:
                 self.output_fps = float(fps_text)
             except:
-                self.output_fps = 8.0
+                self.output_fps = 30.0
+
+        self.output_repetitions = self.get_selected_repetition_count()
+
+        self.topaz_interpolation_frames = self.get_topaz_interpolation_count()
+        self.topaz_slowmo_factor = self.get_topaz_slowmo_factor()
+        self.topaz_interpolation_model = self.get_topaz_interpolation_model()
                 
         # Store these values on the image object for use in slice_and_create_gif
         if hasattr(self, 'image') and self.image:
             self.image.output_resolution = self.output_resolution
             self.image.output_fps = self.output_fps
+            self.image.output_repetitions = self.output_repetitions
+            self.image.topaz_interpolation_frames = self.topaz_interpolation_frames
+            self.image.topaz_slowmo_factor = self.topaz_slowmo_factor
+            self.image.topaz_interpolation_model = self.topaz_interpolation_model
             
         # Update animation timer if it's running
         if hasattr(self, 'animation_timer') and self.animation_timer.isActive():
             self.animation_timer.stop()
-            interval = int(1000 / self.output_fps)
-            self.animation_timer.start(interval)
+            self.restart_animation_timer()
 
 def launch_gui():
     """Sets up and launches the PySide6 GUI application."""
