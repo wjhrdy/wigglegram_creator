@@ -12,6 +12,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       max-parallel: 1
+      # Don't cancel other platforms when one fails — we want every
+      # platform's result in a single run.
+      fail-fast: false
       matrix:
         include:
           # Linux x64
@@ -26,10 +29,9 @@ jobs:
           - os: windows-latest
             arch: 'x64'
             spec: specs/windows.spec
-          # Windows arm64 (public preview)
-          - os: windows-11-arm
-            arch: 'arm64'
-            spec: specs/windows.spec
+          # NOTE: Windows arm64 is intentionally omitted. scikit-image has no
+          # prebuilt win-arm64 wheel and the runners lack a C toolchain, so the
+          # build fails. Windows arm64 users can run the x64 build via emulation.
           # macOS x64 (Intel)
           - os: macos-13
             arch: 'x64'
