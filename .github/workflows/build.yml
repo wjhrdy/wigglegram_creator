@@ -70,12 +70,20 @@ jobs:
       - name: Build with PyInstaller
         run: uv run pyinstaller ${{ matrix.spec }}
 
-      - name: Zip build output
+      - name: Zip build output (Unix)
+        if: runner.os != 'Windows'
         run: |
           ls -l dist
           cd dist
           zip -r ../wigglegram-creator-${{ runner.os }}-${{ matrix.arch }}.zip .
         shell: bash
+
+      - name: Zip build output (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Get-ChildItem dist
+          Compress-Archive -Path dist/* -DestinationPath wigglegram-creator-${{ runner.os }}-${{ matrix.arch }}.zip
+        shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
