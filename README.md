@@ -17,7 +17,13 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 
 ## Installation
 
-### Using uv (Recommended)
+### Download a prebuilt app (easiest)
+
+Grab the latest build for your platform from the [Releases page](https://github.com/wjhrdy/wigglegram_creator/releases). Builds are produced automatically for Linux, Windows, and macOS (both Intel and Apple Silicon).
+
+> **macOS:** the app is unsigned, so Gatekeeper will quarantine it. See [Opening the app on macOS](#opening-the-app-on-macos) below.
+
+### Using uv
 
 1. Install `uv` (if you don't have it):
    ```bash
@@ -25,9 +31,9 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
    ```
    Follow the on-screen instructions to add `uv` to your PATH.
 
-2. Install and run the GUI application:
+2. Run the GUI directly from the repository (no manual clone needed):
    ```bash
-   uvx --from git+https://github.com/wjhrdy/wigglegram_creator wigglegram-creator gui
+   uvx --from git+https://github.com/wjhrdy/wigglegram_creator wigglegram-creator
    ```
 
 ### Using pip
@@ -38,23 +44,33 @@ pip install git+https://github.com/wjhrdy/wigglegram_creator.git
 
 ## Usage
 
-### GUI Mode
+Launch the GUI:
 
 ```bash
-wigglegram-creator gui
-# or with debug mode
-wigglegram-creator gui --debug
+wigglegram-creator
+# or enable debug mode (exports debug masks)
+wigglegram-creator --debug
 ```
 
-### Command Line Mode
+> **Note:** Wigglegram Creator is a GUI-only application. Images are added by dragging and dropping them onto the window — there is no headless command-line export mode.
+
+## Opening the app on macOS
+
+The prebuilt macOS app is not signed or notarized, so the first time you open it macOS will quarantine it and show a warning like *"Wigglegram Creator can't be opened because Apple cannot check it for malicious software."* There are two ways around this:
+
+**Option 1 — Right-click to open (no terminal):**
+
+1. Move `Wigglegram Creator.app` to your `Applications` folder.
+2. Right-click (or Control-click) the app and choose **Open**.
+3. In the dialog that appears, click **Open** again. macOS remembers this choice for future launches.
+
+**Option 2 — Remove the quarantine attribute (terminal):**
 
 ```bash
-# Create a wigglegram from images
-wigglegram-creator create image1.jpg image2.jpg image3.jpg -o output.gif
-
-# Specify FPS
-wigglegram-creator create image*.jpg -o output.gif --fps 10
+xattr -dr com.apple.quarantine "/Applications/Wigglegram Creator.app"
 ```
+
+Then open the app normally.
 
 ## Development
 
@@ -72,8 +88,15 @@ wigglegram-creator create image*.jpg -o output.gif --fps 10
    uv run python create_wiggle.py
    ```
 
+### Automated Builds (GitHub Actions)
+
+The [`.github/workflows/build.yml`](.github/workflows/build.yml) workflow builds the app with PyInstaller for Linux, Windows, and macOS (Intel + Apple Silicon). It runs in two ways:
+
+- **On a version tag** (`git tag v1.2.3 && git push --tags`): builds every platform and publishes a GitHub Release with the zipped artifacts attached.
+- **Manually** from the **Actions → Build and Release → Run workflow** button (`workflow_dispatch`): builds every platform and uploads the zips as workflow artifacts, without creating a release.
+
 ### Manual Build (Advanced)
-If you want to build the app yourself:
+If you want to build the app yourself locally:
 
 1. **(Recommended) Set up your environment with [uv](https://github.com/astral-sh/uv):**
    ```sh
@@ -94,7 +117,7 @@ If you want to build the app yourself:
      ```
    The executable or bundle will be created in the `dist/` folder.
 
-## Usage
+## Using the App
 - **Drag and drop** one or more images (JPG/PNG) onto the app window.
 - **Slice** the image using grid in the top left
 - **Click on the image** where you want the center of the wiggle to be
@@ -115,9 +138,6 @@ On macOS, Wigglegram Creator looks for Topaz Video's bundled `ffmpeg` at:
 If found, the GUI shows **Topaz Slowdown**. The app interpolates only the forward frame sequence once, then reuses those frames for pingpong and repeated video exports. For example, a 4-frame sequence in pingpong mode is interpolated as `1-2-3-4` first, then mirrored to create the reverse half.
 
 The default export settings are 30 fps, 4x slowdown, and 10 repetitions. With 30 fps and 4x slowdown, the preview cadence is approximately 7.5 source frames per second.
-
-## TODO
-- fix automated build of executable
 
 ## License
 MIT

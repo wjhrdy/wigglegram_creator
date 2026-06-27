@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # Allow building the app on demand from the Actions tab (no release is made).
+  workflow_dispatch:
 
 jobs:
   build:
@@ -43,7 +45,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
       - name: Install Qt X11 dependencies (Linux only)
         if: runner.os == 'Linux'
@@ -83,6 +85,8 @@ jobs:
 
   release:
     needs: build
+    # Only publish a GitHub Release when a version tag is pushed.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
