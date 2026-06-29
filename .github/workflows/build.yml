@@ -74,12 +74,24 @@ jobs:
       - name: Build with PyInstaller
         run: uv run pyinstaller ${{ matrix.spec }}
 
-      - name: Zip build output (Unix)
-        if: runner.os != 'Windows'
+      - name: Zip build output (Linux)
+        if: runner.os == 'Linux'
         run: |
           ls -l dist
           cd dist
           zip -r ../wigglegram-creator-${{ runner.os }}-${{ matrix.arch }}.zip .
+        shell: bash
+
+      - name: Zip build output (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          ls -l dist
+          # The macOS spec emits both the .app bundle and the intermediate
+          # COLLECT onedir folder (a duplicate of the bundle payload). Ship only
+          # the .app, using ditto so bundle metadata/permissions are preserved.
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/*.app \
+            wigglegram-creator-${{ runner.os }}-${{ matrix.arch }}.zip
         shell: bash
 
       - name: Zip build output (Windows)
