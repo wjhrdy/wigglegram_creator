@@ -17,9 +17,27 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 
 ## Installation
 
-### Download a prebuilt app (easiest)
+### Install with Homebrew (macOS, easiest)
 
-Grab the latest build for your platform from the [Releases page](https://github.com/wjhrdy/wigglegram_creator/releases). Builds are produced automatically for Linux, Windows, and macOS (both Intel and Apple Silicon).
+This repo doubles as its own Homebrew tap. Add it and install the app as a cask:
+
+```bash
+brew tap wjhrdy/wigglegram https://github.com/wjhrdy/wigglegram_creator
+brew install --cask --no-quarantine wigglegram-creator
+```
+
+`Wigglegram Creator.app` is installed to `/Applications`. The `--no-quarantine`
+flag lets the unsigned app open without a Gatekeeper prompt; if you omit it, see
+[Opening the app on macOS](#opening-the-app-on-macos).
+
+To update later: `brew update && brew upgrade --cask wigglegram-creator`.
+
+> Only an Apple Silicon build is published. On an Intel Mac the cask won't
+> install — use [uv](#using-uv) instead.
+
+### Download a prebuilt app
+
+Grab the latest build for your platform from the [Releases page](https://github.com/wjhrdy/wigglegram_creator/releases). Builds are produced automatically for Linux (x64 + arm64), Windows (x64), and macOS (Apple Silicon).
 
 > **macOS:** the app is unsigned, so Gatekeeper will quarantine it. See [Opening the app on macOS](#opening-the-app-on-macos) below.
 
