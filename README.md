@@ -90,10 +90,12 @@ Then open the app normally.
 
 ### Automated Builds (GitHub Actions)
 
-The [`.github/workflows/build.yml`](.github/workflows/build.yml) workflow builds the app with PyInstaller for Linux, Windows, and macOS (Intel + Apple Silicon). It runs in two ways:
+The [`.github/workflows/build.yml`](.github/workflows/build.yml) workflow builds the app with PyInstaller for **Linux (x64 + arm64)** and **Windows (x64)**. It runs in two ways:
 
 - **On a version tag** (`git tag v1.2.3 && git push --tags`): builds every platform and publishes a GitHub Release with the zipped artifacts attached.
 - **Manually** from the **Actions → Build and Release → Run workflow** button (`workflow_dispatch`): builds every platform and uploads the zips as workflow artifacts, without creating a release.
+
+> **macOS is built locally, not in CI.** GitHub-hosted macOS runners are not provisioned for this account (jobs queue forever), so the macOS app is built on a Mac with the steps below and attached to the release manually.
 
 ### Manual Build (Advanced)
 If you want to build the app yourself locally:
@@ -102,6 +104,11 @@ If you want to build the app yourself locally:
    ```sh
    uv sync
    ```
+   The repo pins Python 3.12 via `.python-version`. This matters: the
+   scientific dependencies (scipy/scikit-image) only ship prebuilt wheels
+   for released Python versions, so on a newer interpreter `uv` would try
+   (and fail) to compile them from source. If you don't have 3.12, `uv`
+   will fetch it automatically.
 2. **Build the app:**
    - **Windows:**
      ```sh
