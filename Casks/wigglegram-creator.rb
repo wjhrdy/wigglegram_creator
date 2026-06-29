@@ -1,6 +1,6 @@
 cask "wigglegram-creator" do
-  version "0.1.1"
-  sha256 "e39bdf7af8692a52cf4c7c44da9b51ebfcb2fcfa55b13de37a9262398648a5f2"
+  version "0.1.2"
+  sha256 "cf463e1e451a2e37c11d07829465315168169db3511ca541e6b1005e3a79e6c2"
 
   url "https://github.com/wjhrdy/wigglegram_creator/releases/download/v#{version}/wigglegram-creator-macOS-arm64.zip"
   name "Wigglegram Creator"
