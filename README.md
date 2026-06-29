@@ -90,12 +90,12 @@ Then open the app normally.
 
 ### Automated Builds (GitHub Actions)
 
-The [`.github/workflows/build.yml`](.github/workflows/build.yml) workflow builds the app with PyInstaller for **Linux (x64 + arm64)** and **Windows (x64)**. It runs in two ways:
+The [`.github/workflows/build.yml`](.github/workflows/build.yml) workflow builds the app with PyInstaller for **Linux (x64 + arm64)**, **Windows (x64)**, and **macOS (Apple Silicon / arm64)**. It runs in two ways:
 
 - **On a version tag** (`git tag v1.2.3 && git push --tags`): builds every platform and publishes a GitHub Release with the zipped artifacts attached.
 - **Manually** from the **Actions → Build and Release → Run workflow** button (`workflow_dispatch`): builds every platform and uploads the zips as workflow artifacts, without creating a release.
 
-> **macOS is built locally, not in CI.** GitHub-hosted macOS runners are not provisioned for this account (jobs queue forever), so the macOS app is built on a Mac with the steps below and attached to the release manually.
+> **Intel macOS is not built.** GitHub retired the `macos-13` (Intel) runner image, so only the Apple Silicon (arm64) build is produced. Intel Macs can run it under Rosetta.
 
 ### Manual Build (Advanced)
 If you want to build the app yourself locally:

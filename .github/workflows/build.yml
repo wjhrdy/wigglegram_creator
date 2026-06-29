@@ -29,15 +29,19 @@ jobs:
           - os: windows-latest
             arch: 'x64'
             spec: specs/windows.spec
+          # macOS arm64 (Apple Silicon)
+          - os: macos-latest
+            arch: 'arm64'
+            spec: specs/macos.spec
           # NOTE: Windows arm64 is intentionally omitted. scikit-image has no
           # prebuilt win-arm64 wheel and the runners lack a C toolchain, so the
           # build fails. Windows arm64 users can run the x64 build via emulation.
           #
-          # NOTE: macOS is intentionally omitted. GitHub-hosted macOS runners are
-          # not provisioned for this account (jobs sit queued indefinitely and are
-          # never assigned a runner, while Linux/Windows build fine). The macOS app
-          # is built locally with `uv run pyinstaller specs/macos.spec` and attached
-          # to releases manually. See README "Manual Build".
+          # NOTE: Intel macOS (macos-13) is intentionally omitted. GitHub has
+          # retired the macOS 13 runner image, so those jobs queue forever with no
+          # runner ever assigned. Combined with max-parallel: 1, that stuck job also
+          # blocked the macos-latest job from ever starting. Only the arm64
+          # (Apple Silicon) runner is used; Intel Macs can run it under Rosetta.
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
