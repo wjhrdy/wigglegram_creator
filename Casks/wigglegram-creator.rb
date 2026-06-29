@@ -14,7 +14,7 @@ cask "wigglegram-creator" do
 
   # Only an Apple Silicon build is published; Intel Macs can run it under Rosetta.
   depends_on arch:  :arm64
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   app "Wigglegram Creator.app"
 
