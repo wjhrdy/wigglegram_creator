@@ -18,9 +18,7 @@ cask "wigglegram-creator" do
 
   app "Wigglegram Creator.app"
 
-  zap trash: [
-    "~/Library/Saved Application State/Wigglegram Creator.savedState",
-  ]
+  zap trash: "~/Library/Saved Application State/Wigglegram Creator.savedState"
 
   caveats <<~EOS
     Wigglegram Creator is not signed or notarized, so macOS Gatekeeper will
