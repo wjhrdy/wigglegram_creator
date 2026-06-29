@@ -23,12 +23,18 @@ This repo doubles as its own Homebrew tap. Add it and install the app as a cask:
 
 ```bash
 brew tap wjhrdy/wigglegram https://github.com/wjhrdy/wigglegram_creator
-brew install --cask --no-quarantine wigglegram-creator
+brew install --cask wigglegram-creator
 ```
 
-`Wigglegram Creator.app` is installed to `/Applications`. The `--no-quarantine`
-flag lets the unsigned app open without a Gatekeeper prompt; if you omit it, see
-[Opening the app on macOS](#opening-the-app-on-macos).
+`Wigglegram Creator.app` is installed to `/Applications`. Because the app is
+unsigned, clear the Gatekeeper quarantine the first time you install it:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Wigglegram Creator.app"
+```
+
+(Alternatively, right-click the app and choose **Open** — see
+[Opening the app on macOS](#opening-the-app-on-macos).)
 
 To update later: `brew update && brew upgrade --cask wigglegram-creator`.
 

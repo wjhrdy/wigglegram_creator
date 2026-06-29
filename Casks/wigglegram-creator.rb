@@ -22,8 +22,8 @@ cask "wigglegram-creator" do
 
   caveats <<~EOS
     Wigglegram Creator is not signed or notarized, so macOS Gatekeeper will
-    block it on first launch. If you installed without --no-quarantine, either
-    right-click the app and choose Open, or run:
+    block it on first launch. Either right-click the app and choose Open, or
+    clear the quarantine flag:
 
       xattr -dr com.apple.quarantine "#{appdir}/Wigglegram Creator.app"
   EOS
