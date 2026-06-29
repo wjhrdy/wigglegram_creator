@@ -23,7 +23,7 @@ This repo doubles as its own Homebrew tap. Add it and install the app as a cask:
 
 ```bash
 brew tap wjhrdy/wigglegram https://github.com/wjhrdy/wigglegram_creator
-brew install --cask wigglegram-creator
+brew install --cask wjhrdy/wigglegram/wigglegram-creator
 ```
 
 `Wigglegram Creator.app` is installed to `/Applications`. Because the app is
@@ -36,7 +36,11 @@ xattr -dr com.apple.quarantine "/Applications/Wigglegram Creator.app"
 (Alternatively, right-click the app and choose **Open** — see
 [Opening the app on macOS](#opening-the-app-on-macos).)
 
-To update later: `brew update && brew upgrade --cask wigglegram-creator`.
+To update later: `brew update && brew upgrade --cask wjhrdy/wigglegram/wigglegram-creator`.
+
+> The cask is referenced by its full tap path. If you'd rather use the short
+> name (`brew install --cask wigglegram-creator`), first trust the tap once with
+> `brew trust wjhrdy/wigglegram`.
 
 > Only an Apple Silicon build is published. On an Intel Mac the cask won't
 > install — use [uv](#using-uv) instead.
