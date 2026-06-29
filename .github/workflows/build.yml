@@ -112,7 +112,14 @@ jobs:
     # Only publish a GitHub Release when a version tag is pushed.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -124,3 +131,26 @@ jobs:
           files: artifacts/**/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew cask
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mac_zip="$(find artifacts -name 'wigglegram-creator-macOS-arm64.zip' | head -1)"
+          if [ -z "$mac_zip" ]; then
+            echo "macOS artifact not found; skipping cask update"
+            exit 0
+          fi
+          sha="$(sha256sum "$mac_zip" | awk '{print $1}')"
+          echo "Updating cask to version=$version sha256=$sha"
+          sed -i -E "s/^  version \".*\"/  version \"${version}\"/" Casks/wigglegram-creator.rb
+          sed -i -E "s/^  sha256 \".*\"/  sha256 \"${sha}\"/" Casks/wigglegram-creator.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/wigglegram-creator.rb
+          if git diff --cached --quiet; then
+            echo "Cask already up to date"
+          else
+            git commit -m "Update Homebrew cask to ${GITHUB_REF_NAME}"
+            git push origin HEAD:main
+          fi
