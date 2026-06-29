@@ -2,8 +2,7 @@ cask "wigglegram-creator" do
   version "0.1.1"
   sha256 "e39bdf7af8692a52cf4c7c44da9b51ebfcb2fcfa55b13de37a9262398648a5f2"
 
-  url "https://github.com/wjhrdy/wigglegram_creator/releases/download/v#{version}/wigglegram-creator-macOS-arm64.zip",
-      verified: "github.com/wjhrdy/wigglegram_creator/"
+  url "https://github.com/wjhrdy/wigglegram_creator/releases/download/v#{version}/wigglegram-creator-macOS-arm64.zip"
   name "Wigglegram Creator"
   desc "Create animated wigglegram GIFs and looping videos from image sequences"
   homepage "https://github.com/wjhrdy/wigglegram_creator"
@@ -14,7 +13,8 @@ cask "wigglegram-creator" do
   end
 
   # Only an Apple Silicon build is published; Intel Macs can run it under Rosetta.
-  depends_on arch: :arm64
+  depends_on arch:  :arm64
+  depends_on macos: ">= :monterey"
 
   app "Wigglegram Creator.app"
 
