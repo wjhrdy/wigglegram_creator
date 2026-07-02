@@ -952,6 +952,7 @@ class DropLabel(QLabel):
         self.topaz_slowmo_factor = 0  # 0 disables Topaz, otherwise 2x-8x slow motion
         self.topaz_interpolation_model = TOPAZ_APOLLO_FAST_MODEL
         self.original_resolution = None  # Will store the original resolution for reference
+        self.frame_strip = None  # Reorderable thumbnail strip (set by launch_gui)
 
         # Set up animation timer
         self.animation_timer = QTimer()
@@ -1537,6 +1538,129 @@ class DropLabel(QLabel):
         self.qpixmaps = animation_qpixmaps
         print(f"[prepare_animation_frames] Prepared {len(self.qpixmaps)} QPixmaps for animation.")
 
+    def refresh_frame_strip(self):
+        """Repopulate the reorderable thumbnail strip from the current aligned frames."""
+        if self.frame_strip is not None:
+            self.frame_strip.set_frames(self.aligned_frames)
+
+    def _rebuild_after_frame_change(self):
+        """Rebuild the preview animation and thumbnail strip after frames are
+        reordered, deleted, or added. Exports read self.aligned_frames directly,
+        so no further work is needed for them."""
+        self.prepare_animation_frames()
+        if self.qpixmaps:
+            self.current_frame_idx = 0
+            self.setPixmap(self.qpixmaps[0])
+            self.restart_animation_timer()
+        else:
+            self.animation_timer.stop()
+            self.clear()
+            self.setText("Drag and drop one or more images here")
+        self.refresh_frame_strip()
+        self.update()
+
+    def reorder_frames(self, new_order):
+        """Apply a permutation (list of current indices in desired order) to the
+        raw and aligned frame lists in lockstep, then rebuild the preview."""
+        n = len(self.aligned_frames)
+        if not new_order or sorted(new_order) != list(range(n)):
+            print(f"[reorder_frames] Ignoring invalid order {new_order} for {n} frames.")
+            self.refresh_frame_strip()  # snap strip back to the real order
+            return
+        self.aligned_frames = [self.aligned_frames[i] for i in new_order]
+        if len(self.frames) == n:
+            self.frames = [self.frames[i] for i in new_order]
+        print(f"[reorder_frames] New frame order: {new_order}")
+        self.update_status(f"Reordered frames: {new_order}")
+        self._rebuild_after_frame_change()
+
+    def delete_frame(self, idx):
+        """Remove a single frame from the sequence."""
+        n = len(self.aligned_frames)
+        if not (0 <= idx < n):
+            return
+        if n <= 2:
+            self.update_status("Need at least 2 frames — can't remove any more.")
+            self.refresh_frame_strip()
+            return
+        del self.aligned_frames[idx]
+        if len(self.frames) == n:
+            del self.frames[idx]
+        print(f"[delete_frame] Removed frame {idx}, {len(self.aligned_frames)} remaining.")
+        self.update_status(f"Removed frame {idx + 1}. {len(self.aligned_frames)} frames remaining.")
+        self._rebuild_after_frame_change()
+
+    def add_frame_files(self, paths):
+        """Append image files as new frames at the end of the sequence, resizing
+        them to match the existing frame size, then re-align the whole set."""
+        if not paths:
+            return
+        if not self.aligned_frames:
+            # No existing frames: treat as a fresh drop instead.
+            self._load_paths_as_new(paths)
+            return
+        # Use the raw frames as the alignment base when they're in sync, so we
+        # don't re-align already-shifted frames on top of themselves.
+        base = self.frames if len(self.frames) == len(self.aligned_frames) else list(self.aligned_frames)
+        ref = base[0]
+        tw, th = ref.size
+        new_raw = []
+        for p in paths:
+            try:
+                img = Image.open(p).convert('RGB')
+                if img.size != (tw, th):
+                    print(f"[add_frame_files] Resizing {os.path.basename(p)} from {img.size} to {(tw, th)}")
+                    img = img.resize((tw, th))
+                new_raw.append(img)
+            except Exception as e:
+                print(f"[add_frame_files] Failed to load {p}: {e}")
+        if not new_raw:
+            self.update_status("Could not load any of the dropped files.")
+            self.refresh_frame_strip()
+            return
+        combined = [f.convert('RGB') for f in base] + new_raw
+        self.update_status(f"Adding {len(new_raw)} frame(s) and re-aligning...")
+        QApplication.processEvents()
+        try:
+            aligned, shifts = align_frames(
+                combined,
+                weight_points=None,
+                sigma=self.current_sigma,
+                upsample_factor=10,
+            )
+        except Exception as e:
+            print(f"[add_frame_files] Re-alignment failed: {e}")
+            aligned = combined
+        self.frames = combined
+        self.aligned_frames = aligned
+        print(f"[add_frame_files] Now {len(self.aligned_frames)} frames.")
+        self.update_status(f"Added {len(new_raw)} frame(s). {len(self.aligned_frames)} frames total.")
+        self._rebuild_after_frame_change()
+
+    def preview_frame(self, idx):
+        """Show a single frame statically (used to inspect the crop against each
+        frame). The forward frames occupy indices 0..n-1 of self.qpixmaps."""
+        n = len(self.aligned_frames)
+        if not self.qpixmaps or not (0 <= idx < n):
+            return
+        self.current_frame_idx = idx
+        self.setPixmap(self.qpixmaps[idx % len(self.qpixmaps)])
+        if self.crop_mode:
+            self.update_status(f"Frame {idx + 1}/{n} — check the crop covers this frame.")
+        self.update()
+
+    def _load_paths_as_new(self, paths):
+        """Load dropped files as a brand-new frame set (used when the strip is
+        empty). Reuses the standard drop pipeline via a synthetic drop event."""
+        from PySide6.QtCore import QMimeData, QUrl
+        from PySide6.QtGui import QDropEvent
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        drop_event = QDropEvent(
+            self.rect().center(), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+        )
+        self.dropEvent(drop_event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # Regenerate QPixmaps at new size if frames are present
@@ -1672,6 +1796,7 @@ class DropLabel(QLabel):
             self.qpixmaps = []
             self.aligned_frames = []
             self.setText("Drag and drop one or more images here") # Reset text
+            self.refresh_frame_strip()
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
@@ -1702,6 +1827,7 @@ class DropLabel(QLabel):
                 self.image.output_repetitions = self.output_repetitions
             # Slice the image into frames
             frames = self.slice_image() # Get initial frames
+            self.frames = frames  # Keep raw frames as source of truth for reorder/add
             print(f"[dropEvent] Num frames from slice_image: {len(frames)}")
             for idx, f in enumerate(frames):
                 print(f"[dropEvent] Frame {idx}: size {f.size}")
@@ -1717,7 +1843,7 @@ class DropLabel(QLabel):
                 if not hasattr(self, 'current_sigma') or self.current_sigma == GAUSSIAN_SIGMA:
                     frame_width = self.image.width() // self.grid_cols
                     self.current_sigma = frame_width / 2
-                    if hasattr(self, 'alignment_sigma_spinbox'):
+                    if getattr(self, 'alignment_sigma_spinbox', None) is not None:
                         self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
                 
                 sigma = self.current_sigma
@@ -1737,6 +1863,7 @@ class DropLabel(QLabel):
             # Prepare frames for display (scaling, QPixmap conversion, ping-pong)
             print("[dropEvent] Calling prepare_animation_frames...")
             self.prepare_animation_frames()
+            self.refresh_frame_strip()
             print(f"[dropEvent] QPixmaps prepared: {len(self.qpixmaps)}")
             # Start animation if frames were prepared
             if self.qpixmaps:
@@ -1765,6 +1892,7 @@ class DropLabel(QLabel):
             self.qpixmaps = []
             self.aligned_frames = []
             self.setText("Drag and drop one or more images here") # Reset text
+            self.refresh_frame_strip()
             if self.gif_button: self.gif_button.setEnabled(False)
             if self.mp4_button: self.mp4_button.setEnabled(False)
             if self.webm_button: self.webm_button.setEnabled(False)
@@ -1874,6 +2002,7 @@ class DropLabel(QLabel):
                     print("[trigger_alignment] No frames sliced, cannot align.")
                     self.update_status("Error slicing image.")
                     return
+                self.frames = frames  # Keep raw frames as source of truth for reorder/add
                 
                 # Get the dimensions of the image and frames
                 img_w, img_h = self.image.size
@@ -1980,6 +2109,7 @@ class DropLabel(QLabel):
                     return
                     
                 self.prepare_animation_frames()
+                self.refresh_frame_strip()
                 if self.qpixmaps:
                     self.current_frame_idx = 0
                     self.setPixmap(self.qpixmaps[self.current_frame_idx])
@@ -2704,12 +2834,13 @@ class DropLabel(QLabel):
                 # Force a refresh of the grid dimensions before slicing
                 print(f"[mouseReleaseEvent] Before slice_image: grid_rows={self.grid_rows}, grid_cols={self.grid_cols}, manual_override={self.manual_grid_override}")
                 frames = self.slice_image()
-                
+                self.frames = frames  # Keep raw frames as source of truth for reorder/add
+
                 # Auto-align the frames with the new grid
                 print("[mouseReleaseEvent] Auto-aligning frames after grid change...")
                 try:
                     upsample_factor = 10
-                    sigma = self.alignment_sigma_spinbox.value() if hasattr(self, 'alignment_sigma_spinbox') else 20
+                    sigma = self.alignment_sigma_spinbox.value() if getattr(self, 'alignment_sigma_spinbox', None) is not None else self.current_sigma
                     self.aligned_frames, shifts = align_frames(
                         frames,
                         weight_points=None,  # No specific point, just general alignment
@@ -2725,6 +2856,7 @@ class DropLabel(QLabel):
                 
                 # Ensure animation frames are properly prepared and displayed
                 self.prepare_animation_frames()
+                self.refresh_frame_strip()
                 print(f"[mouseReleaseEvent] Prepared {len(self.qpixmaps) if hasattr(self, 'qpixmaps') else 0} animation frames")
                 
                 if hasattr(self, 'qpixmaps') and self.qpixmaps:
@@ -2847,9 +2979,9 @@ class DropLabel(QLabel):
             self.current_sigma = max(min_sigma, min(self.current_sigma, max_sigma))
             
             # Update the sigma spinbox if it exists
-            if hasattr(self, 'alignment_sigma_spinbox'):
+            if getattr(self, 'alignment_sigma_spinbox', None) is not None:
                 self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
-            
+
             # Update the display
             self.update()
             
@@ -2972,6 +3104,141 @@ class DropLabel(QLabel):
             self.animation_timer.stop()
             self.restart_animation_timer()
 
+from PySide6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView
+from PySide6.QtGui import QIcon, QPixmap, QImage
+from PySide6.QtCore import Qt, QSize
+
+
+class FrameStrip(QListWidget):
+    """A horizontal thumbnail strip showing each frame in play order.
+
+    - Drag a thumbnail left/right to reorder the frames.
+    - Select a thumbnail and press Delete/Backspace (or right-click) to remove it.
+    - Drop image files onto the strip to append them as new frames.
+
+    All mutations are delegated to the owner DropLabel, which holds the frame
+    state; this widget only reflects and requests changes."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        self._suppress = False  # guard against reacting to our own repopulation
+
+        self.setViewMode(QListWidget.ListMode)
+        self.setFlow(QListWidget.LeftToRight)
+        self.setWrapping(False)
+        self.setResizeMode(QListWidget.Adjust)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setIconSize(QSize(120, 96))
+        self.setSpacing(6)
+        self.setFixedHeight(150)
+        self.setAcceptDrops(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.setStyleSheet(
+            "QListWidget { background-color: #2b2b2b; border: 1px solid #444; }"
+            "QListWidget::item { color: #ddd; padding: 2px; }"
+            "QListWidget::item:selected { background-color: #3d6fb0; }"
+        )
+        self.setToolTip(
+            "Drag to reorder frames · Delete key removes the selected frame · "
+            "Drop image files here to add frames"
+        )
+
+        self.model().rowsMoved.connect(self._on_rows_moved)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+        self.currentRowChanged.connect(self._on_current_row)
+
+    def _on_current_row(self, row):
+        # Selecting a thumbnail jumps the (paused) preview to that frame — useful
+        # in crop mode to verify the crop box covers every frame. Ignored while
+        # we're repopulating the strip ourselves.
+        if self._suppress or row < 0:
+            return
+        self.owner.preview_frame(row)
+
+    def set_frames(self, frames):
+        """Repopulate thumbnails from a list of PIL frames, preserving order."""
+        self._suppress = True
+        self.clear()
+        for idx, frame in enumerate(frames or []):
+            item = QListWidgetItem(f"{idx + 1}")
+            item.setData(Qt.UserRole, idx)  # current position, read back after a move
+            item.setTextAlignment(Qt.AlignHCenter | Qt.AlignBottom)
+            try:
+                item.setIcon(QIcon(self._thumbnail(frame)))
+            except Exception as e:
+                print(f"[FrameStrip] Thumbnail failed for frame {idx}: {e}")
+            self.addItem(item)
+        self._suppress = False
+
+    def _thumbnail(self, frame):
+        rgb = frame.convert('RGB')
+        w, h = rgb.size
+        arr = np.array(rgb)
+        qimage = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        return QPixmap.fromImage(qimage).scaled(
+            self.iconSize(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+
+    def _on_rows_moved(self, *args):
+        if self._suppress:
+            return
+        new_order = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        # Defer the rebuild: we're inside Qt's drag-drop unwinding, so repopulating
+        # the model synchronously here can crash. Run it on the next event tick.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.owner.reorder_frames(new_order))
+
+    def _on_context_menu(self, pos):
+        item = self.itemAt(pos)
+        if item is None:
+            return
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        remove_action = menu.addAction("Remove frame")
+        chosen = menu.exec(self.mapToGlobal(pos))
+        if chosen == remove_action:
+            self.owner.delete_frame(item.data(Qt.UserRole))
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            item = self.currentItem()
+            if item is not None:
+                self.owner.delete_frame(item.data(Qt.UserRole))
+                return
+        super().keyPressEvent(event)
+
+    # --- external file drops (add frames) ---------------------------------
+    def _urls_from(self, event):
+        md = event.mimeData()
+        if not md.hasUrls():
+            return []
+        return [u.toLocalFile() for u in md.urls() if u.toLocalFile()]
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)  # internal move
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        paths = self._urls_from(event)
+        if paths:
+            event.acceptProposedAction()
+            self.owner.add_frame_files(paths)
+        else:
+            super().dropEvent(event)  # internal reorder → triggers rowsMoved
+
+
 def launch_gui():
     """Sets up and launches the PySide6 GUI application."""
     import sys
@@ -2997,8 +3264,13 @@ def launch_gui():
     
     drop_label = DropLabel(status_label, button_layout)
     drop_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-    
+
+    # Reorderable thumbnail strip: drag to reorder, Delete to remove, drop to add
+    frame_strip = FrameStrip(drop_label)
+    drop_label.frame_strip = frame_strip
+
     layout.addWidget(drop_label, stretch=1)
+    layout.addWidget(frame_strip)
     layout.addLayout(button_layout)
     layout.addWidget(status_label)
     
