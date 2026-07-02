@@ -14,9 +14,12 @@ numpy==2.2.5
     # via
     #   wigglegram-creator (pyproject.toml)
     #   imageio
+    #   opencv-python
     #   scikit-image
     #   scipy
     #   tifffile
+opencv-python==5.0.0.93
+    # via wigglegram-creator (pyproject.toml)
 packaging==25.0
     # via
     #   lazy-loader

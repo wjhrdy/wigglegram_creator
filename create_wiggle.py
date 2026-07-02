@@ -442,6 +442,64 @@ def detect_frame_order(frames, max_dim=512, max_frames=12):
     return [int(i) for i in order]
 
 
+_face_cascade = None
+
+
+def _get_face_cascade():
+    """Load OpenCV's bundled frontal-face Haar cascade once. Returns None if
+    unavailable so callers can fall back to whole-frame alignment."""
+    global _face_cascade
+    if _face_cascade is None:
+        try:
+            import cv2
+            cascade = cv2.CascadeClassifier(
+                os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+            )
+            _face_cascade = cascade if not cascade.empty() else False
+        except Exception as e:
+            print(f"[detect_face] Could not load face cascade: {e}")
+            _face_cascade = False
+    return _face_cascade or None
+
+
+def detect_face_weight_point(frame, max_dim=512):
+    """Find the most prominent face in a PIL frame.
+
+    Detection runs on a downscaled grayscale copy so the no-face case (common
+    for wigglegrams of scenery/objects) is rejected in a few tens of ms.
+    Returns ((cx, cy), face_size) in the frame's own pixel coordinates, or
+    None when no face is found.
+    """
+    cascade = _get_face_cascade()
+    if cascade is None:
+        return None
+    try:
+        import cv2
+        gray = np.asarray(frame.convert('L'))
+        h, w = gray.shape
+        scale = min(1.0, max_dim / max(w, h))
+        if scale < 1.0:
+            gray = cv2.resize(gray, (max(1, round(w * scale)), max(1, round(h * scale))),
+                              interpolation=cv2.INTER_AREA)
+        gray = cv2.equalizeHist(gray)
+        # A face has to be a reasonable fraction of the frame to be a useful
+        # alignment anchor; the size floor also keeps detection fast. The
+        # strict minNeighbors filters texture false-positives (which would
+        # silently anchor alignment on the wrong spot) at the cost of
+        # occasionally missing an angled face — the user can still click.
+        min_size = max(24, int(min(gray.shape) * 0.08))
+        faces = cascade.detectMultiScale(
+            gray, scaleFactor=1.2, minNeighbors=8, minSize=(min_size, min_size)
+        )
+        if len(faces) == 0:
+            return None
+        x, y, fw, fh = max(faces, key=lambda f: int(f[2]) * int(f[3]))
+        return ((x + fw / 2.0) / scale, (y + fh / 2.0) / scale), max(fw, fh) / scale
+    except Exception as e:
+        print(f"[detect_face] Face detection failed: {e}")
+        return None
+
+
 def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1, sigma=50, power=None, base=None):
     import math
     import numpy as np
@@ -2056,8 +2114,9 @@ class DropLabel(QLabel):
                 print("[dropEvent] No frames sliced, cannot proceed.")
                 raise ValueError("Image slicing failed or resulted in zero frames.")
                 
-            # Auto-align the frames
+            # Auto-align the frames, anchored on a detected face when there is one
             print("[dropEvent] Auto-aligning frames...")
+            face_note = ""
             try:
                 upsample_factor = 10
                 # Calculate default sigma as half the image width if not already set
@@ -2066,11 +2125,33 @@ class DropLabel(QLabel):
                     self.current_sigma = frame_width / 2
                     if getattr(self, 'alignment_sigma_spinbox', None) is not None:
                         self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
-                
+
+                weight_points = None  # No specific point, just general alignment
+                ref_idx = len(frames) // 2 if len(frames) % 2 == 1 else len(frames) // 2 - 1
+                face = detect_face_weight_point(frames[ref_idx])
+                if face is not None:
+                    (face_x, face_y), face_size = face
+                    weight_points = [(face_x, face_y)]
+                    # Focus the alignment mask on the face instead of the whole frame
+                    self.current_sigma = max(30.0, face_size * 0.75)
+                    if getattr(self, 'alignment_sigma_spinbox', None) is not None:
+                        self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
+                    # Store the face as the alignment point (trigger_alignment maps
+                    # a global point to frame-local coords, so the equivalent point
+                    # in the first grid cell keeps sigma-wheel re-alignment anchored
+                    # on the face)
+                    self.alignment_point = (face_x, face_y)
+                    face_note = "Face detected — aligned on face. "
+                    print(f"[dropEvent] Face detected in frame {ref_idx} at "
+                          f"({face_x:.0f}, {face_y:.0f}), size {face_size:.0f}px; "
+                          f"aligning on it with sigma {self.current_sigma:.0f}")
+                else:
+                    print("[dropEvent] No face detected; using whole-frame alignment")
+
                 sigma = self.current_sigma
                 self.aligned_frames, shifts = align_frames(
                     frames,
-                    weight_points=None,  # No specific point, just general alignment
+                    weight_points=weight_points,
                     sigma=sigma,
                     upsample_factor=upsample_factor
                 )
@@ -2080,7 +2161,7 @@ class DropLabel(QLabel):
                     f"Reordered frames to {[i + 1 for i in detected_order]} by detected motion. "
                     if detected_order else ""
                 )
-                self.update_status(f"{order_note}Auto-aligned with shifts: {shift_strs}")
+                self.update_status(f"{order_note}{face_note}Auto-aligned with shifts: {shift_strs}")
             except Exception as e:
                 print(f"[dropEvent] Auto-alignment failed: {e}")
                 self.aligned_frames = frames  # Use unaligned frames if alignment fails
@@ -2096,7 +2177,10 @@ class DropLabel(QLabel):
                 self.setPixmap(self.qpixmaps[0])
                 self.restart_animation_timer()
                 # Use current_path which is set for both single and multiple file cases
-                self.update_status(f"Loaded: {os.path.basename(self.current_path)}. Click a point to align.")
+                if face_note:
+                    self.update_status(f"Loaded: {os.path.basename(self.current_path)}. Aligned on detected face — click a point to re-align.")
+                else:
+                    self.update_status(f"Loaded: {os.path.basename(self.current_path)}. Click a point to align.")
                 # Enable save buttons only after successful load and frame prep
                 if self.gif_button: self.gif_button.setEnabled(True)
                 if self.mp4_button: self.mp4_button.setEnabled(True)

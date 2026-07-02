@@ -8,6 +8,7 @@ Wigglegram Creator is a simple, user-friendly application for generating animate
 
 ## Features
 - **Drag-and-drop GUI**: Easily add images for processing.
+- **Automatic face alignment**: If a face is detected on import, alignment is anchored on it automatically; otherwise the whole frame is used. Click the preview to override.
 - **Animated GIF output**: Downscaled for easy sharing.
 - **Looping MP4/WebM video output**: Full resolution, with configurable repetitions.
 - **Export crop**: Draw a crop box on the preview and apply it before scaling, Topaz interpolation, and export.
@@ -155,7 +156,8 @@ If you want to build the app yourself locally:
 ## Using the App
 - **Drag and drop** one or more images (JPG/PNG) onto the app window.
 - **Slice** the image using grid in the top left
-- **Click on the image** where you want the center of the wiggle to be
+- If a **face** is detected in the reference frame, the wiggle is automatically centered on it on import
+- **Click on the image** where you want the center of the wiggle to be (overrides the automatic face alignment)
 - **Scroll** to change the size of the area to focus on and refine the wiggle
 - **Choose** the output scale, fps, and number of video repetitions
 - **Set Crop** to draw an export crop over the preview; use **Clear Crop** to remove it
