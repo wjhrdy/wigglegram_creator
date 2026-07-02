@@ -905,7 +905,7 @@ class DropLabel(QLabel):
         self.button_layout = button_layout
         self.setAcceptDrops(True)
         self.setAlignment(Qt.AlignCenter)
-        self.setText("Drag and drop one or more images here")
+        self.setText("Drag and drop images, or a video / GIF, here")
         self.setMinimumSize(400, 300)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("QLabel { background-color: #f0f0f0; border: 2px dashed #cccccc; }")
@@ -946,13 +946,18 @@ class DropLabel(QLabel):
         
         # Output parameters
         self.output_resolution = "1920×1080"  # Default to 1080p
-        self.output_fps = 30.0  # Default to 30 fps
+        # Default fps: 8 for a natural wiggle speed, but 30 when Topaz slowdown is
+        # available (the slowdown interpolates the higher rate back to smooth motion).
+        self.output_fps = 30.0 if self.topaz_available else 8.0
         self.output_repetitions = 10  # Default video repetitions
         self.topaz_interpolation_frames = 0  # Number of generated frames between each forward pair
         self.topaz_slowmo_factor = 0  # 0 disables Topaz, otherwise 2x-8x slow motion
         self.topaz_interpolation_model = TOPAZ_APOLLO_FAST_MODEL
         self.original_resolution = None  # Will store the original resolution for reference
         self.frame_strip = None  # Reorderable thumbnail strip (set by launch_gui)
+        self.normalize_exposure = False  # Match brightness/colour across frames
+        self._display_frames = []  # aligned frames with normalization applied (cached)
+        self._display_sig = None  # cache key for _display_frames
 
         # Set up animation timer
         self.animation_timer = QTimer()
@@ -1125,7 +1130,16 @@ class DropLabel(QLabel):
         
         # Add frame rate options
         self.fps_options = [
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
             "8",
+            "10",
+            "12",
+            "15",
+            "20",
             "23.976",
             "24",
             "25",
@@ -1139,8 +1153,8 @@ class DropLabel(QLabel):
         ]
         self.fps_combo.addItems(self.fps_options)
         
-        # Set default to 30 fps
-        self.fps_combo.setCurrentText("30")
+        # Default fps: 30 with Topaz slowdown available, otherwise 8 for a natural wiggle.
+        self.fps_combo.setCurrentText("30" if self.topaz_available else "8")
         self.fps_combo.setToolTip("Select output frame rate (fps)")
         fps_row.addWidget(self.fps_label)
         fps_row.addWidget(self.fps_combo)
@@ -1162,8 +1176,8 @@ class DropLabel(QLabel):
             self.topaz_slowmo_combo.addItem("Off", 0)
             for factor in range(2, 9):
                 self.topaz_slowmo_combo.addItem(f"{factor}x", factor)
-            self.topaz_slowmo_combo.setCurrentText("4x")
-            self.topaz_slowmo_combo.setToolTip("Apply Topaz Apollo Fast slow motion before export. 4x adds 3 generated frames between each forward frame pair.")
+            self.topaz_slowmo_combo.setCurrentText("2x")
+            self.topaz_slowmo_combo.setToolTip("Apply Topaz Apollo Fast slow motion before export. 2x adds 1 generated frame between each forward frame pair.")
             self.topaz_slowmo_combo.currentIndexChanged.connect(self.update_output_parameters)
             interpolation_row.addWidget(self.topaz_interpolation_label)
             interpolation_row.addWidget(self.topaz_slowmo_combo)
@@ -1185,6 +1199,13 @@ class DropLabel(QLabel):
         self.pingpong_checkbox.setToolTip("Toggle between forward-backward (12321) and forward-only (123123) animation")
         self.pingpong_checkbox.stateChanged.connect(self.toggle_pingpong_mode)
         self.button_layout.addWidget(self.pingpong_checkbox)
+
+        # Add exposure normalization checkbox
+        self.normalize_checkbox = QCheckBox("Normalize Exposure")
+        self.normalize_checkbox.setChecked(False)
+        self.normalize_checkbox.setToolTip("Match brightness and colour across frames to stop flashing from unevenly-scanned film")
+        self.normalize_checkbox.stateChanged.connect(self.toggle_normalize_exposure)
+        self.button_layout.addWidget(self.normalize_checkbox)
 
         self.crop_button = QPushButton("Set Crop")
         self.crop_button.setCheckable(True)
@@ -1349,10 +1370,39 @@ class DropLabel(QLabel):
         self.current_sigma = value
         self.update()
     
+    def get_display_frames(self):
+        """Aligned frames with exposure normalization applied when enabled.
+        This is the single source of truth for the preview, the thumbnail strip,
+        and exports. Cached so repeated calls (e.g. on window resize) are cheap."""
+        aligned = self.aligned_frames
+        norm = self.normalize_exposure
+        sig = (norm, tuple(id(f) for f in aligned)) if aligned else (norm, ())
+        if self._display_sig == sig and self._display_frames is not None:
+            return self._display_frames
+        if aligned and norm:
+            self._display_frames = normalize_exposure_frames(aligned)
+        else:
+            self._display_frames = aligned
+        self._display_sig = sig
+        return self._display_frames
+
+    def toggle_normalize_exposure(self, state):
+        """Toggle per-frame exposure/colour normalization for preview and export."""
+        self.normalize_exposure = self.normalize_checkbox.isChecked()
+        self.update_status(
+            "Exposure normalization on — matching brightness across frames."
+            if self.normalize_exposure else "Exposure normalization off."
+        )
+        if self.aligned_frames:
+            self.prepare_animation_frames()
+            if self.qpixmaps:
+                self.setPixmap(self.qpixmaps[self.current_frame_idx % len(self.qpixmaps)])
+            self.refresh_frame_strip()
+            self.update()
+
     def toggle_pingpong_mode(self, state):
         """Toggle between pingpong (forward-backward) and forward-only animation modes."""
-        from PySide6.QtCore import Qt
-        self.pingpong_mode = (state == Qt.Checked)
+        self.pingpong_mode = self.pingpong_checkbox.isChecked()
         if hasattr(self, 'image') and self.image:
             # Store the mode in the image object for use in slice_and_create_gif
             self.image.pingpong_mode = self.pingpong_mode
@@ -1489,11 +1539,12 @@ class DropLabel(QLabel):
             self.qpixmaps = []
             return
 
-        print(f"[prepare_animation_frames] Number of frames: {len(self.aligned_frames)}")
+        display_frames = self.get_display_frames()
+        print(f"[prepare_animation_frames] Number of frames: {len(display_frames)}")
         self.qpixmaps = []
         w, h = self.width(), self.height()
         print(f"[prepare_animation_frames] Widget size: {w}x{h}")
-        for idx, frame in enumerate(self.aligned_frames):
+        for idx, frame in enumerate(display_frames):
             if frame.width == 0 or frame.height == 0:
                 print(f"[prepare_animation_frames] Frame {idx} has zero size, skipping.")
                 continue
@@ -1539,9 +1590,9 @@ class DropLabel(QLabel):
         print(f"[prepare_animation_frames] Prepared {len(self.qpixmaps)} QPixmaps for animation.")
 
     def refresh_frame_strip(self):
-        """Repopulate the reorderable thumbnail strip from the current aligned frames."""
+        """Repopulate the reorderable thumbnail strip from the current display frames."""
         if self.frame_strip is not None:
-            self.frame_strip.set_frames(self.aligned_frames)
+            self.frame_strip.set_frames(self.get_display_frames())
 
     def _rebuild_after_frame_change(self):
         """Rebuild the preview animation and thumbnail strip after frames are
@@ -1678,6 +1729,29 @@ class DropLabel(QLabel):
         else:
             event.ignore()
 
+    def combine_frames_horizontally(self, images):
+        """Combine a list of PIL Images side-by-side into one strip. Frames taller
+        than the shortest are center-cropped to match (no scaling, to preserve
+        scale for translation-only alignment)."""
+        if not images:
+            return None
+        images = [img.convert('RGB') for img in images]
+        h = min(img.height for img in images)
+        cropped = []
+        for img in images:
+            if img.height != h:
+                top = (img.height - h) // 2
+                img = img.crop((0, top, img.width, top + h))
+            cropped.append(img)
+        images = cropped
+        total_width = sum(img.width for img in images)
+        combined = Image.new('RGB', (total_width, h))
+        x = 0
+        for img in images:
+            combined.paste(img, (x, 0))
+            x += img.width
+        return combined
+
     def combine_images_horizontally(self, image_paths):
         """
         Combine multiple images horizontally. All images must have the same height.
@@ -1738,13 +1812,38 @@ class DropLabel(QLabel):
             # Sort paths by filename
             paths.sort(key=lambda p: os.path.basename(p))
             
-            if len(paths) == 1:
+            known_frame_count = None  # set when we know the exact frame count (media or multi-file)
+            handled = False
+
+            if len(paths) == 1 and is_media_file(paths[0]):
+                # Video or animated GIF: extract the unique wiggle frames.
+                print(f"[dropEvent] Extracting frames from media: {os.path.basename(paths[0])}")
+                self.update_status(f"Extracting frames from {os.path.basename(paths[0])}...")
+                QApplication.processEvents()
+                try:
+                    media_frames = extract_media_frames(paths[0])
+                except Exception as e:
+                    print(f"[dropEvent] Media extraction failed: {e}")
+                    media_frames = None
+                if media_frames and len(media_frames) >= 2:
+                    self.image = self.combine_frames_horizontally(media_frames)
+                    self.current_path = os.path.splitext(paths[0])[0] + "_wiggle.png"
+                    known_frame_count = len(media_frames)
+                    handled = True
+                    print(f"[dropEvent] Extracted {known_frame_count} frames from media.")
+                else:
+                    # Not animated (e.g. a static image with a video-ish ext) — fall through.
+                    print("[dropEvent] No animated frames found; treating as a normal file.")
+
+            if handled:
+                pass
+            elif len(paths) == 1:
                 # Single file case - process normally
                 path = paths[0]
                 print(f"[dropEvent] Loading single file: {os.path.basename(path)}")
                 self.update_status(f"Loading: {os.path.basename(path)}...")
                 QApplication.processEvents() # Update UI immediately
-                
+
                 self.image = Image.open(path)
                 self.current_path = path
             else:
@@ -1753,15 +1852,30 @@ class DropLabel(QLabel):
                 print(f"[dropEvent] Loading multiple files: {file_names}")
                 self.update_status(f"Loading {len(paths)} files...")
                 QApplication.processEvents() # Update UI immediately
-                
-                # Combine the images horizontally
-                combined_image = self.combine_images_horizontally(paths)
-                if combined_image is None:
-                    print("[dropEvent] Failed to combine images. All images must have the same height.")
-                    self.update_status("Error: Failed to combine images. All images must have the same height.")
+
+                # Load all images, then standardize to the smallest common size
+                # (center-crop, no scaling) so different-resolution photos just work.
+                images = []
+                for p in paths:
+                    try:
+                        images.append(Image.open(p))
+                    except Exception as e:
+                        print(f"[dropEvent] Skipping unreadable file {p}: {e}")
+                if len(images) < 2:
+                    print("[dropEvent] Fewer than 2 readable images; nothing to combine.")
+                    self.update_status("Error: Need at least 2 readable images to combine.")
                     return
-                    
-                self.image = combined_image
+
+                sizes = [img.size for img in images]
+                images = standardize_frames(images)
+                if len(set(sizes)) > 1:
+                    self.update_status(
+                        f"Standardized {len(images)} images to {images[0].width}×{images[0].height} (center-cropped)."
+                    )
+                    print(f"[dropEvent] Sizes {sizes} -> standardized to {images[0].size}")
+
+                self.image = self.combine_frames_horizontally(images)
+                known_frame_count = len(images)  # exact frame count, so slice precisely
                 # Create a temporary path for the combined image
                 self.current_path = os.path.join(os.path.dirname(paths[0]), "combined_image.png")
                 print(f"[dropEvent] Created combined image with size: {self.image.size}")
@@ -1778,7 +1892,13 @@ class DropLabel(QLabel):
             if self.clear_crop_button:
                 self.clear_crop_button.setEnabled(False)
             self.manual_grid_override = False  # Reset to FFT mode on new image
-            
+
+            if known_frame_count:
+                # We know the exact frame count (media or multi-file), so bypass FFT slicing.
+                self.manual_grid_override = True
+                self.grid_cols = known_frame_count
+                self.grid_rows = 1
+
             # Store the original resolution for reference
             self.original_resolution = f"{self.image.width}×{self.image.height}"
             
@@ -2127,9 +2247,12 @@ class DropLabel(QLabel):
         from PySide6.QtWidgets import QFileDialog
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open Image(s)",
+            "Open Image(s) or Video",
             "",
-            "Image Files (*.jpg *.jpeg *.png *.gif *.mpo);;All Files (*)"
+            "Images & Video (*.jpg *.jpeg *.png *.gif *.webp *.mpo *.mp4 *.mov *.m4v *.avi *.webm *.mkv);;"
+            "Image Files (*.jpg *.jpeg *.png *.gif *.mpo);;"
+            "Video Files (*.mp4 *.mov *.m4v *.avi *.webm *.mkv);;"
+            "All Files (*)"
         )
         if file_paths:
             # Simulate a drop event with these files
@@ -2188,7 +2311,7 @@ class DropLabel(QLabel):
                 # Scale frames to the target resolution
                 if self.aligned_frames and len(self.aligned_frames) > 0:
                     frames = []
-                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    export_frames = self.apply_export_crop(self.get_display_frames())
                     first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
@@ -2198,7 +2321,7 @@ class DropLabel(QLabel):
                         scaled_frame = scale_image(frame, scale_factor * 0.5)  # GIF at half resolution
                         frames.append(scaled_frame)
                 else:
-                    frames = self.aligned_frames[:]
+                    frames = self.get_display_frames()[:]
 
                 frames = self.apply_topaz_interpolation_for_export(frames)
                 
@@ -2266,7 +2389,7 @@ class DropLabel(QLabel):
                 # Scale frames to the target resolution
                 if self.aligned_frames and len(self.aligned_frames) > 0:
                     scaled_frames = []
-                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    export_frames = self.apply_export_crop(self.get_display_frames())
                     first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
@@ -2276,7 +2399,7 @@ class DropLabel(QLabel):
                         scaled_frame = scale_image(frame, scale_factor)
                         scaled_frames.append(scaled_frame)
                 else:
-                    scaled_frames = self.aligned_frames[:]
+                    scaled_frames = self.get_display_frames()[:]
 
                 scaled_frames = self.apply_topaz_interpolation_for_export(scaled_frames)
                 
@@ -2356,7 +2479,7 @@ class DropLabel(QLabel):
                 
                 # Calculate scaling factor based on the first frame's height
                 if self.aligned_frames and len(self.aligned_frames) > 0:
-                    export_frames = self.apply_export_crop(self.aligned_frames)
+                    export_frames = self.apply_export_crop(self.get_display_frames())
                     first_frame = export_frames[0]
                     original_height = first_frame.height
                     scale_factor = target_height / original_height
@@ -2366,7 +2489,7 @@ class DropLabel(QLabel):
                     webm_frames = [scale_image(image, scale_factor) for image in export_frames]
                 else:
                     # Fallback to old behavior if no frames
-                    webm_frames = [scale_image(image, 0.4) for image in self.aligned_frames]
+                    webm_frames = [scale_image(image, 0.4) for image in self.get_display_frames()]
 
                 webm_frames = self.apply_topaz_interpolation_for_export(webm_frames)
                 
@@ -3109,6 +3232,134 @@ from PySide6.QtGui import QIcon, QPixmap, QImage
 from PySide6.QtCore import Qt, QSize
 
 
+# --- Video / animated-GIF frame extraction ---------------------------------
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".webm", ".mkv"}
+ANIMATED_IMAGE_EXTS = {".gif", ".webp"}
+
+
+def is_media_file(path):
+    """True if the path looks like a video or animated image we can extract
+    wiggle frames from."""
+    ext = os.path.splitext(path)[1].lower()
+    return ext in VIDEO_EXTS or ext in ANIMATED_IMAGE_EXTS
+
+
+def standardize_frames(images):
+    """Center-crop every image to the smallest common width and height so all
+    frames share pixel dimensions.
+
+    Frames are assumed to be captured at the same scale, so we crop rather than
+    resize — scaling would zoom the subject and break the translation-only
+    alignment. Returns a new list of equally-sized RGB images."""
+    images = [img.convert('RGB') for img in images]
+    if len(images) < 2:
+        return images
+    min_w = min(img.width for img in images)
+    min_h = min(img.height for img in images)
+    out = []
+    for img in images:
+        left = (img.width - min_w) // 2
+        top = (img.height - min_h) // 2
+        out.append(img.crop((left, top, left + min_w, top + min_h)))
+    return out
+
+
+def normalize_exposure_frames(frames):
+    """Match every frame's per-channel mean and standard deviation to the set
+    average, so exposure/colour differences between scans stop the wigglegram
+    from flashing. Returns a new list of RGB PIL Images."""
+    if len(frames) < 2:
+        return list(frames)
+    arrs = [np.asarray(f.convert('RGB'), dtype=np.float32) for f in frames]
+    means = np.array([[a[..., c].mean() for c in range(3)] for a in arrs])
+    stds = np.array([[a[..., c].std() for c in range(3)] for a in arrs])
+    target_mean = means.mean(axis=0)
+    target_std = stds.mean(axis=0)
+    out = []
+    for a, m, s in zip(arrs, means, stds):
+        res = np.empty_like(a)
+        for c in range(3):
+            sd = s[c] if s[c] > 1e-3 else 1.0
+            res[..., c] = (a[..., c] - m[c]) * (target_std[c] / sd) + target_mean[c]
+        out.append(Image.fromarray(np.clip(res, 0, 255).astype(np.uint8)))
+    return out
+
+
+def _small_gray(pil_image):
+    """Small grayscale array used for cheap frame-similarity comparisons."""
+    return np.asarray(pil_image.convert("L").resize((90, 120)), dtype="float32")
+
+
+def _detect_loop_period(smalls, max_period=60):
+    """Find the smallest N such that frame[i] ~ frame[i+N] across the clip — the
+    number of unique frames in a looped wigglegram video. Returns len(smalls)
+    when no clean loop is found (i.e. treat every frame as unique)."""
+    n = len(smalls)
+    if n < 4:
+        return n
+    consec = float(np.median([np.mean(np.abs(smalls[i] - smalls[i + 1])) for i in range(n - 1)]))
+    limit = min(max_period, n // 2)
+    best_p, best_d = None, None
+    for p in range(2, limit + 1):
+        d = float(np.mean([np.mean(np.abs(smalls[i] - smalls[i + p])) for i in range(0, n - p)]))
+        if best_d is None or d < best_d:
+            best_p, best_d = p, d
+    # Accept a loop only if frames p apart are far more similar than adjacent motion.
+    if best_p is not None and best_d < max(2.0, 0.35 * consec):
+        return best_p
+    return n
+
+
+def _collapse_pingpong(frames, smalls):
+    """If one loop is a palindrome (A B C D C B), it's a ping-pong export — return
+    just the forward half (A B C D)."""
+    p = len(frames)
+    if p < 4:
+        return frames
+    diffs = [np.mean(np.abs(smalls[i] - smalls[p - i])) for i in range(1, p)]
+    consec = np.median([np.mean(np.abs(smalls[i] - smalls[i + 1])) for i in range(p - 1)])
+    if max(diffs) < max(2.0, 0.35 * consec):
+        return frames[:p // 2 + 1]
+    return frames
+
+
+def extract_media_frames(path, max_decode=300):
+    """Extract the unique wiggle frames from a video or animated image.
+
+    - Animated images (GIF/WebP): each stored frame is distinct; ping-pong
+      exports are collapsed to the forward half.
+    - Videos: decode frames, detect the loop period, keep one cycle, then
+      collapse ping-pong.
+
+    Returns a list of RGB PIL Images, or None if the file isn't animated /
+    can't be decoded into 2+ frames."""
+    from PIL import ImageSequence
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ANIMATED_IMAGE_EXTS:
+        im = Image.open(path)
+        frames = [f.convert("RGB") for f in ImageSequence.Iterator(im)]
+        if len(frames) < 2:
+            return None  # static image
+        return _collapse_pingpong(frames, [_small_gray(f) for f in frames])
+    if ext in VIDEO_EXTS:
+        import imageio.v2 as iio
+        reader = iio.get_reader(path, "ffmpeg")
+        frames = []
+        try:
+            for i, fr in enumerate(reader):
+                if i >= max_decode:
+                    break
+                frames.append(Image.fromarray(np.asarray(fr)).convert("RGB"))
+        finally:
+            reader.close()
+        if len(frames) < 2:
+            return None
+        smalls = [_small_gray(f) for f in frames]
+        period = _detect_loop_period(smalls)
+        return _collapse_pingpong(frames[:period], smalls[:period])
+    return None
+
+
 class FrameStrip(QListWidget):
     """A horizontal thumbnail strip showing each frame in play order.
 
@@ -3257,7 +3508,7 @@ def launch_gui():
     window.setGeometry(100, 100, 800, 600)
     layout = QVBoxLayout(window)
     
-    status_label = QLabel("Drag and drop one or more images to combine them horizontally. Multiple images must have the same height.")
+    status_label = QLabel("Drag in images to combine, or a video / GIF to extract its frames. Multiple images must have the same height.")
     status_label.setAlignment(Qt.AlignCenter)
     
     button_layout = QHBoxLayout()
