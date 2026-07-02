@@ -3517,6 +3517,44 @@ def _small_gray(pil_image):
     return np.asarray(pil_image.convert("L").resize((90, 120)), dtype="float32")
 
 
+def _collapse_held_frames(frames, smalls):
+    """Videos usually hold each wiggle frame for several video frames. Drop
+    consecutive frames that only differ by codec noise, keeping the first of
+    each run. No-op when every adjacent pair differs by real motion."""
+    if len(frames) < 2:
+        return frames, smalls
+    adj = [float(np.mean(np.abs(smalls[i] - smalls[i + 1]))) for i in range(len(smalls) - 1)]
+    lo, hi = min(adj), max(adj)
+    if hi < 1.0:
+        return frames[:1], smalls[:1]  # every frame is noise-identical: static clip
+    if lo > 0.25 * hi:
+        return frames, smalls  # no near-zero steps, so no held runs to collapse
+    # Held duplicates sit near 0 while real motion steps are an order of
+    # magnitude larger; anything under a quarter of the range is "same frame".
+    noise = max(1.0, lo + 0.25 * (hi - lo))
+    keep_f, keep_s = [frames[0]], [smalls[0]]
+    for f, s in zip(frames[1:], smalls[1:]):
+        if float(np.mean(np.abs(s - keep_s[-1]))) > noise:
+            keep_f.append(f)
+            keep_s.append(s)
+    return keep_f, keep_s
+
+
+def _find_reversals(smalls):
+    """Indices where the motion direction flips (frame i-1 ~ frame i+1, i.e.
+    the clip returned to where it just was) — the extremes of a ping-pong
+    wigglegram video. Mid-sweep, frames two apart differ by ~2 motion steps."""
+    n = len(smalls)
+    if n < 3:
+        return []
+    adj = [float(np.mean(np.abs(smalls[i] - smalls[i + 1]))) for i in range(n - 1)]
+    step = float(np.median(adj))
+    return [
+        i for i in range(1, n - 1)
+        if float(np.mean(np.abs(smalls[i - 1] - smalls[i + 1]))) < 0.6 * step
+    ]
+
+
 def _detect_loop_period(smalls, max_period=60):
     """Find the smallest N such that frame[i] ~ frame[i+N] across the clip — the
     number of unique frames in a looped wigglegram video. Returns len(smalls)
@@ -3571,10 +3609,15 @@ def _collapse_pingpong(frames, smalls):
 def extract_media_frames(path, max_decode=300):
     """Extract the unique wiggle frames from a video or animated image.
 
-    Both animated images (GIF/WebP) and videos go through the same reduction:
-    drop consecutive duplicate frames (timing padding / exact loop repeats),
-    detect the loop period and keep one cycle, then collapse ping-pong
-    (A B C D C B -> A B C D) so only the root frames remain.
+    - Animated images (GIF/WebP): drop consecutive duplicate frames (timing
+      padding / exact loop repeats), detect the loop period and keep one cycle,
+      then collapse ping-pong (A B C D C B -> A B C D).
+    - Videos: collapse held (consecutive-duplicate) frames, then keep the
+      longest sweep between two direction reversals — one extreme-to-extreme
+      pass with each position once, in spatial order. When no clear reversals
+      are found, fall back to loop-period detection plus ping-pong collapse.
+      (Reversal detection tolerates clips starting mid-sweep or with jittery
+      hold timing, which defeat index-based loop detection.)
 
     Returns a list of RGB PIL Images, or None if the file isn't animated /
     can't be decoded into 2+ frames."""
@@ -3598,6 +3641,20 @@ def extract_media_frames(path, max_decode=300):
             reader.close()
         if len(frames) < 2:
             return None
+        smalls = [_small_gray(f) for f in frames]
+        frames, smalls = _collapse_held_frames(frames, smalls)
+        if len(frames) < 2:
+            return None  # effectively static
+        reversals = _find_reversals(smalls)
+        if len(reversals) >= 2:
+            # Ping-pong playback: the longest sweep between two consecutive
+            # direction changes holds each position once, in spatial order.
+            # (Works even when the clip starts mid-sweep or hold timing
+            # jitters, which break index-based loop detection below.)
+            start, end = max(zip(reversals, reversals[1:]), key=lambda ab: ab[1] - ab[0])
+            return frames[start:end + 1]
+        period = _detect_loop_period(smalls)
+        return _collapse_pingpong(frames[:period], smalls[:period])
     else:
         return None
     smalls = [_small_gray(f) for f in frames]
