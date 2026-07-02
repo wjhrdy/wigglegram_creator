@@ -364,6 +364,84 @@ def generate_debug_mask_image(frame, weight_point, sigma=GAUSSIAN_SIGMA, power=G
     return debug_img
 
 
+def detect_frame_order(frames, max_dim=512, max_frames=12):
+    """Recover the capture order of wigglegram frames from their content.
+
+    Frames from a multi-lens camera sit along a (roughly linear) baseline, so
+    each frame is essentially a translated copy of its neighbours. Estimate
+    every pairwise translation with phase correlation, solve a least-squares
+    position for each frame, project onto the dominant motion axis, and sort.
+
+    Returns the permutation (current indices in detected order), or None when
+    the frames don't show consistent linear motion — reordering would be a
+    guess, so callers should keep the existing order. A linear order is only
+    recoverable up to reversal, so the direction closer to the current
+    arrangement is chosen.
+    """
+    n = len(frames)
+    if n < 3 or n > max_frames:
+        return None
+
+    scale = min(1.0, max_dim / max(frames[0].size))
+    size = (max(2, round(frames[0].width * scale)), max(2, round(frames[0].height * scale)))
+    # Hanning window suppresses the FFT wrap-around edge artifacts
+    window = np.outer(np.hanning(size[1]), np.hanning(size[0])).astype(np.float32)
+    grays = [
+        np.asarray(f.convert('L').resize(size, Image.BILINEAR), dtype=np.float32) * window
+        for f in frames
+    ]
+
+    pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+    deltas, weights = [], []
+    for i, j in pairs:
+        shift, error, _ = phase_cross_correlation(grays[i], grays[j], upsample_factor=4)
+        deltas.append((float(shift[1]), float(shift[0])))  # (dx, dy)
+        weights.append(max(1e-3, 1.0 - float(error)))
+
+    # Weighted least squares for per-frame 2-D positions: each pair gives
+    # p_i - p_j ~= delta; an extra sum(p)=0 row anchors the solution.
+    A = np.zeros((len(pairs) + 1, n))
+    bx = np.zeros(len(pairs) + 1)
+    by = np.zeros(len(pairs) + 1)
+    for r, ((i, j), (dx, dy), w) in enumerate(zip(pairs, deltas, weights)):
+        A[r, i], A[r, j] = w, -w
+        bx[r], by[r] = w * dx, w * dy
+    A[-1, :] = 1.0
+    px = np.linalg.lstsq(A, bx, rcond=None)[0]
+    py = np.linalg.lstsq(A, by, rcond=None)[0]
+    pos = np.stack([px, py], axis=1)
+
+    # Project onto the dominant motion axis (PCA)
+    centered = pos - pos.mean(axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    t = centered @ vt[0]
+
+    spread = float(t.max() - t.min())
+    if spread < 2.0:
+        print(f"[detect_frame_order] Motion spread {spread:.2f}px too small — keeping current order.")
+        return None
+    # Pairwise measurements must agree with the recovered positions; large
+    # residuals mean the frames aren't translated copies of one another.
+    gap = spread / (n - 1)
+    resid = [
+        float(np.hypot(pos[i, 0] - pos[j, 0] - dx, pos[i, 1] - pos[j, 1] - dy))
+        for (i, j), (dx, dy) in zip(pairs, deltas)
+    ]
+    med_resid = float(np.median(resid))
+    if med_resid > 0.6 * gap:
+        print(f"[detect_frame_order] Inconsistent shifts (median residual {med_resid:.2f}px vs "
+              f"adjacent gap {gap:.2f}px) — keeping current order.")
+        return None
+
+    order = list(np.argsort(t))
+    reversed_order = order[::-1]
+    if sum(abs(r - i) for i, r in enumerate(reversed_order)) < sum(abs(r - i) for i, r in enumerate(order)):
+        order = reversed_order
+    print(f"[detect_frame_order] positions={[f'{v:.1f}' for v in t]}, order={order}, "
+          f"spread={spread:.1f}px, median residual={med_resid:.2f}px")
+    return [int(i) for i in order]
+
+
 def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1, sigma=50, power=None, base=None):
     import math
     import numpy as np
@@ -1610,6 +1688,20 @@ class DropLabel(QLabel):
         self.refresh_frame_strip()
         self.update()
 
+    def _autodetect_frame_order(self, frames, context):
+        """Run content-based order detection on freshly loaded frames. Returns
+        (frames, order) — reordered when a confident, different order was
+        found, otherwise unchanged with order=None."""
+        try:
+            order = detect_frame_order(frames)
+        except Exception as e:
+            print(f"[{context}] Frame-order detection failed: {e}")
+            return frames, None
+        if not order or order == list(range(len(frames))):
+            return frames, None
+        print(f"[{context}] Auto-detected frame order: {order}")
+        return [frames[i] for i in order], order
+
     def reorder_frames(self, new_order):
         """Apply a permutation (list of current indices in desired order) to the
         raw and aligned frame lists in lockstep, then rebuild the preview."""
@@ -1670,7 +1762,15 @@ class DropLabel(QLabel):
             self.refresh_frame_strip()
             return
         combined = [f.convert('RGB') for f in base] + new_raw
-        self.update_status(f"Adding {len(new_raw)} frame(s) and re-aligning...")
+        # Slot the new frames into their detected place in the motion sequence
+        # instead of leaving them appended at the end.
+        n_base = len(base)
+        combined, detected = self._autodetect_frame_order(combined, "add_frame_files")
+        placed_note = ""
+        if detected:
+            placed = sorted(detected.index(k) + 1 for k in range(n_base, len(combined)))
+            placed_note = f" at position(s) {placed} by detected motion"
+        self.update_status(f"Adding {len(new_raw)} frame(s){placed_note} and re-aligning...")
         QApplication.processEvents()
         try:
             aligned, shifts = align_frames(
@@ -1947,6 +2047,7 @@ class DropLabel(QLabel):
                 self.image.output_repetitions = self.output_repetitions
             # Slice the image into frames
             frames = self.slice_image() # Get initial frames
+            frames, detected_order = self._autodetect_frame_order(frames, "dropEvent")
             self.frames = frames  # Keep raw frames as source of truth for reorder/add
             print(f"[dropEvent] Num frames from slice_image: {len(frames)}")
             for idx, f in enumerate(frames):
@@ -1975,7 +2076,11 @@ class DropLabel(QLabel):
                 )
                 shift_strs = [f"[{s[0]:.2f}, {s[1]:.2f}]" for s in shifts if s is not None]
                 print(f"[dropEvent] Auto-alignment complete with shifts: {shift_strs}")
-                self.update_status(f"Auto-aligned with shifts: {shift_strs}")
+                order_note = (
+                    f"Reordered frames to {[i + 1 for i in detected_order]} by detected motion. "
+                    if detected_order else ""
+                )
+                self.update_status(f"{order_note}Auto-aligned with shifts: {shift_strs}")
             except Exception as e:
                 print(f"[dropEvent] Auto-alignment failed: {e}")
                 self.aligned_frames = frames  # Use unaligned frames if alignment fails
@@ -2117,7 +2222,10 @@ class DropLabel(QLabel):
                 print(f"[trigger_alignment] Using parameters: sigma={sigma}, power={power}, base={base}")
                     
                 print(f"[trigger_alignment] Using sigma={sigma}, upsample_factor={upsample_factor}")
-                frames = self.slice_image()
+                # Reuse the raw frames (source of truth for order, additions and
+                # deletions) rather than re-slicing self.image, which is still in
+                # the original drop order and would silently undo any reordering.
+                frames = self.frames if self.frames else self.slice_image()
                 if not frames:
                     print("[trigger_alignment] No frames sliced, cannot align.")
                     self.update_status("Error slicing image.")
@@ -2957,6 +3065,7 @@ class DropLabel(QLabel):
                 # Force a refresh of the grid dimensions before slicing
                 print(f"[mouseReleaseEvent] Before slice_image: grid_rows={self.grid_rows}, grid_cols={self.grid_cols}, manual_override={self.manual_grid_override}")
                 frames = self.slice_image()
+                frames, _ = self._autodetect_frame_order(frames, "mouseReleaseEvent")
                 self.frames = frames  # Keep raw frames as source of truth for reorder/add
 
                 # Auto-align the frames with the new grid
