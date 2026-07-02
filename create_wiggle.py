@@ -3310,6 +3310,24 @@ def _detect_loop_period(smalls, max_period=60):
     return n
 
 
+def _dedup_consecutive(frames, smalls):
+    """Drop frames that are nearly identical to the previously kept frame.
+    GIFs often store the same frame several times in a row for timing, and
+    looped exports repeat frames exactly."""
+    if len(frames) < 3:
+        return frames, smalls
+    diffs = [float(np.mean(np.abs(smalls[i] - smalls[i + 1]))) for i in range(len(smalls) - 1)]
+    thresh = max(1.0, 0.15 * float(np.median(diffs)))
+    kept_frames, kept_smalls = [frames[0]], [smalls[0]]
+    for f, s in zip(frames[1:], smalls[1:]):
+        if float(np.mean(np.abs(s - kept_smalls[-1]))) >= thresh:
+            kept_frames.append(f)
+            kept_smalls.append(s)
+    if len(kept_frames) < 2:
+        return frames, smalls
+    return kept_frames, kept_smalls
+
+
 def _collapse_pingpong(frames, smalls):
     """If one loop is a palindrome (A B C D C B), it's a ping-pong export — return
     just the forward half (A B C D)."""
@@ -3326,10 +3344,10 @@ def _collapse_pingpong(frames, smalls):
 def extract_media_frames(path, max_decode=300):
     """Extract the unique wiggle frames from a video or animated image.
 
-    - Animated images (GIF/WebP): each stored frame is distinct; ping-pong
-      exports are collapsed to the forward half.
-    - Videos: decode frames, detect the loop period, keep one cycle, then
-      collapse ping-pong.
+    Both animated images (GIF/WebP) and videos go through the same reduction:
+    drop consecutive duplicate frames (timing padding / exact loop repeats),
+    detect the loop period and keep one cycle, then collapse ping-pong
+    (A B C D C B -> A B C D) so only the root frames remain.
 
     Returns a list of RGB PIL Images, or None if the file isn't animated /
     can't be decoded into 2+ frames."""
@@ -3340,8 +3358,7 @@ def extract_media_frames(path, max_decode=300):
         frames = [f.convert("RGB") for f in ImageSequence.Iterator(im)]
         if len(frames) < 2:
             return None  # static image
-        return _collapse_pingpong(frames, [_small_gray(f) for f in frames])
-    if ext in VIDEO_EXTS:
+    elif ext in VIDEO_EXTS:
         import imageio.v2 as iio
         reader = iio.get_reader(path, "ffmpeg")
         frames = []
@@ -3354,10 +3371,12 @@ def extract_media_frames(path, max_decode=300):
             reader.close()
         if len(frames) < 2:
             return None
-        smalls = [_small_gray(f) for f in frames]
-        period = _detect_loop_period(smalls)
-        return _collapse_pingpong(frames[:period], smalls[:period])
-    return None
+    else:
+        return None
+    smalls = [_small_gray(f) for f in frames]
+    frames, smalls = _dedup_consecutive(frames, smalls)
+    period = _detect_loop_period(smalls)
+    return _collapse_pingpong(frames[:period], smalls[:period])
 
 
 class FrameStrip(QListWidget):
