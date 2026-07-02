@@ -6,7 +6,7 @@ a = Analysis(
     ['../create_wiggle.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('../models/face_detection_yunet_2023mar.onnx', 'models')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -442,58 +442,92 @@ def detect_frame_order(frames, max_dim=512, max_frames=12):
     return [int(i) for i in order]
 
 
-_face_cascade = None
+_face_detector = None
+
+YUNET_MODEL_FILE = os.path.join("models", "face_detection_yunet_2023mar.onnx")
 
 
-def _get_face_cascade():
-    """Load OpenCV's bundled frontal-face Haar cascade once. Returns None if
-    unavailable so callers can fall back to whole-frame alignment."""
-    global _face_cascade
-    if _face_cascade is None:
+def _yunet_model_path():
+    """Locate the vendored YuNet model both from a checkout and from a
+    PyInstaller bundle (where data files live under sys._MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, YUNET_MODEL_FILE)
+
+
+def _get_face_detector():
+    """Load a face detector once: YuNet (handles tilted faces and glasses)
+    when its model file is present, otherwise OpenCV's bundled frontal-face
+    Haar cascade. Returns None if neither is available so callers can fall
+    back to whole-frame alignment."""
+    global _face_detector
+    if _face_detector is None:
         try:
             import cv2
-            cascade = cv2.CascadeClassifier(
-                os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-            )
-            _face_cascade = cascade if not cascade.empty() else False
+            model = _yunet_model_path()
+            if os.path.exists(model):
+                _face_detector = ("yunet", cv2.FaceDetectorYN.create(
+                    model, "", (320, 320), score_threshold=0.7))
+            else:
+                raise FileNotFoundError(f"YuNet model not found at {model}")
         except Exception as e:
-            print(f"[detect_face] Could not load face cascade: {e}")
-            _face_cascade = False
-    return _face_cascade or None
+            print(f"[detect_face] YuNet unavailable ({e}); trying Haar cascade")
+            try:
+                import cv2
+                cascade = cv2.CascadeClassifier(
+                    os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+                )
+                _face_detector = ("haar", cascade) if not cascade.empty() else False
+            except Exception as e2:
+                print(f"[detect_face] Could not load face cascade: {e2}")
+                _face_detector = False
+    return _face_detector or None
 
 
 def detect_face_weight_point(frame, max_dim=512):
-    """Find the most prominent face in a PIL frame.
+    """Find the most prominent (largest) face in a PIL frame.
 
-    Detection runs on a downscaled grayscale copy so the no-face case (common
-    for wigglegrams of scenery/objects) is rejected in a few tens of ms.
+    Detection runs on a copy downscaled to max_dim so the no-face case
+    (common for wigglegrams of scenery/objects) is rejected in ~10ms.
     Returns ((cx, cy), face_size) in the frame's own pixel coordinates, or
     None when no face is found.
     """
-    cascade = _get_face_cascade()
-    if cascade is None:
+    detector = _get_face_detector()
+    if detector is None:
         return None
+    kind, det = detector
     try:
         import cv2
-        gray = np.asarray(frame.convert('L'))
-        h, w = gray.shape
+        rgb = np.asarray(frame.convert('RGB'))
+        h, w = rgb.shape[:2]
         scale = min(1.0, max_dim / max(w, h))
-        if scale < 1.0:
-            gray = cv2.resize(gray, (max(1, round(w * scale)), max(1, round(h * scale))),
-                              interpolation=cv2.INTER_AREA)
-        gray = cv2.equalizeHist(gray)
         # A face has to be a reasonable fraction of the frame to be a useful
-        # alignment anchor; the size floor also keeps detection fast. The
-        # strict minNeighbors filters texture false-positives (which would
-        # silently anchor alignment on the wrong spot) at the cost of
-        # occasionally missing an angled face — the user can still click.
-        min_size = max(24, int(min(gray.shape) * 0.08))
-        faces = cascade.detectMultiScale(
-            gray, scaleFactor=1.2, minNeighbors=8, minSize=(min_size, min_size)
-        )
+        # alignment anchor; tiny background faces shouldn't hijack the wiggle.
+        min_size = max(16, min(h, w) * scale * 0.06)
+        if kind == "yunet":
+            small = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            if scale < 1.0:
+                small = cv2.resize(small, (max(1, round(w * scale)), max(1, round(h * scale))),
+                                   interpolation=cv2.INTER_AREA)
+            det.setInputSize((small.shape[1], small.shape[0]))
+            _, faces = det.detect(small)
+            if faces is None:
+                faces = []
+            faces = [f[:4] for f in faces if max(f[2], f[3]) >= min_size]
+        else:
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            if scale < 1.0:
+                gray = cv2.resize(gray, (max(1, round(w * scale)), max(1, round(h * scale))),
+                                  interpolation=cv2.INTER_AREA)
+            gray = cv2.equalizeHist(gray)
+            # Strict minNeighbors filters Haar's texture false-positives
+            # (which would silently anchor alignment on the wrong spot) at
+            # the cost of missing angled faces — the user can still click.
+            ms = max(24, int(min_size))
+            faces = det.detectMultiScale(
+                gray, scaleFactor=1.2, minNeighbors=8, minSize=(ms, ms))
         if len(faces) == 0:
             return None
-        x, y, fw, fh = max(faces, key=lambda f: int(f[2]) * int(f[3]))
+        x, y, fw, fh = max(faces, key=lambda f: float(f[2]) * float(f[3]))
         return ((x + fw / 2.0) / scale, (y + fh / 2.0) / scale), max(fw, fh) / scale
     except Exception as e:
         print(f"[detect_face] Face detection failed: {e}")
