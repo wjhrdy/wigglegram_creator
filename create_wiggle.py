@@ -3540,21 +3540,6 @@ def _collapse_held_frames(frames, smalls):
     return keep_f, keep_s
 
 
-def _find_reversals(smalls):
-    """Indices where the motion direction flips (frame i-1 ~ frame i+1, i.e.
-    the clip returned to where it just was) — the extremes of a ping-pong
-    wigglegram video. Mid-sweep, frames two apart differ by ~2 motion steps."""
-    n = len(smalls)
-    if n < 3:
-        return []
-    adj = [float(np.mean(np.abs(smalls[i] - smalls[i + 1]))) for i in range(n - 1)]
-    step = float(np.median(adj))
-    return [
-        i for i in range(1, n - 1)
-        if float(np.mean(np.abs(smalls[i - 1] - smalls[i + 1]))) < 0.6 * step
-    ]
-
-
 def _detect_loop_period(smalls, max_period=60):
     """Find the smallest N such that frame[i] ~ frame[i+N] across the clip — the
     number of unique frames in a looped wigglegram video. Returns len(smalls)
@@ -3612,12 +3597,10 @@ def extract_media_frames(path, max_decode=300):
     - Animated images (GIF/WebP): drop consecutive duplicate frames (timing
       padding / exact loop repeats), detect the loop period and keep one cycle,
       then collapse ping-pong (A B C D C B -> A B C D).
-    - Videos: collapse held (consecutive-duplicate) frames, then keep the
-      longest sweep between two direction reversals — one extreme-to-extreme
-      pass with each position once, in spatial order. When no clear reversals
-      are found, fall back to loop-period detection plus ping-pong collapse.
-      (Reversal detection tolerates clips starting mid-sweep or with jittery
-      hold timing, which defeat index-based loop detection.)
+    - Videos: collapse held (consecutive-duplicate) frames, then detect the
+      loop period, keep one cycle, and collapse ping-pong (A B C D C B ->
+      A B C D). Content-based order detection downstream unscrambles cycles
+      whose frames were captured out of spatial order.
 
     Returns a list of RGB PIL Images, or None if the file isn't animated /
     can't be decoded into 2+ frames."""
@@ -3645,14 +3628,6 @@ def extract_media_frames(path, max_decode=300):
         frames, smalls = _collapse_held_frames(frames, smalls)
         if len(frames) < 2:
             return None  # effectively static
-        reversals = _find_reversals(smalls)
-        if len(reversals) >= 2:
-            # Ping-pong playback: the longest sweep between two consecutive
-            # direction changes holds each position once, in spatial order.
-            # (Works even when the clip starts mid-sweep or hold timing
-            # jitters, which break index-based loop detection below.)
-            start, end = max(zip(reversals, reversals[1:]), key=lambda ab: ab[1] - ab[0])
-            return frames[start:end + 1]
         period = _detect_loop_period(smalls)
         return _collapse_pingpong(frames[:period], smalls[:period])
     else:
