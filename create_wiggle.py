@@ -2167,7 +2167,7 @@ class DropLabel(QLabel):
                     (face_x, face_y), face_size = face
                     weight_points = [(face_x, face_y)]
                     # Focus the alignment mask on the face instead of the whole frame
-                    self.current_sigma = max(30.0, face_size * 0.75)
+                    self.current_sigma = max(30.0, float(face_size) * 0.75)
                     if getattr(self, 'alignment_sigma_spinbox', None) is not None:
                         self.alignment_sigma_spinbox.setValue(int(self.current_sigma))
                     # Store the face as the alignment point (trigger_alignment maps
@@ -2846,6 +2846,10 @@ class DropLabel(QLabel):
                 else:
                     # Fallback if we can't calculate the scale factor
                     display_radius = self.current_sigma / 2
+
+                # QPainter overloads take native ints; a numpy float (e.g. a
+                # sigma derived from face detection) raises TypeError here.
+                display_radius = int(round(float(display_radius)))
                 
                 # Draw the sigma circle to visualize the current sigma value
                 painter.setPen(QPen(QColor(0, 255, 0), 2))
