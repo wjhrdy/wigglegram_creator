@@ -91,6 +91,72 @@ def crop_images(image_array, crop_size):
     return cropped_images
 
 
+def compute_auto_crop_rect(shifts, frame_size, margin=3):
+    """Offset-based crop that removes the np.roll wrap bands left by alignment.
+
+    ``align_frames`` aligns each frame with ``np.roll(frame, int_shift, axis=(0,1))``
+    where ``int_shift`` is ``round(shift)`` and ``shift`` is ``(dy, dx)`` (skimage
+    convention). Because ``np.roll`` wraps rather than translating into empty space,
+    a frame rolled by ``(dy, dx)`` gets a band of wrapped-around garbage:
+
+        dx > 0 -> left dx cols garbage      dx < 0 -> right |dx| cols garbage
+        dy > 0 -> top dy rows garbage       dy < 0 -> bottom |dy| rows garbage
+
+    The clean region common to every frame trims each edge by the worst case
+    across frames (plus a small safety ``margin`` to hide any residual seam).
+
+    Args:
+        shifts: list of (dy, dx) array-likes, or None entries (e.g. reference frame).
+        frame_size: (width, height) of the aligned frames.
+        margin: extra pixels trimmed per edge beyond the exact wrap width.
+
+    Returns:
+        (left, top, right, bottom) in frame pixels, or None when no meaningful
+        trim is needed or the result would collapse the frame.
+    """
+    if not shifts:
+        return None
+
+    width, height = frame_size
+    max_dx = min_dx = max_dy = min_dy = 0
+    for shift in shifts:
+        if shift is None:
+            continue
+        # Match align_frames: the applied shift is the rounded integer.
+        dy = int(round(float(shift[0])))
+        dx = int(round(float(shift[1])))
+        max_dx = max(max_dx, dx)
+        min_dx = min(min_dx, dx)
+        max_dy = max(max_dy, dy)
+        min_dy = min(min_dy, dy)
+
+    crop_left = max(0, max_dx)
+    crop_right = max(0, -min_dx)
+    crop_top = max(0, max_dy)
+    crop_bottom = max(0, -min_dy)
+
+    # If alignment produced no shift at all there is nothing to trim.
+    if crop_left == 0 and crop_right == 0 and crop_top == 0 and crop_bottom == 0:
+        return None
+
+    crop_left += margin
+    crop_right += margin
+    crop_top += margin
+    crop_bottom += margin
+
+    left = crop_left
+    top = crop_top
+    right = width - crop_right
+    bottom = height - crop_bottom
+
+    # Reject a degenerate box (e.g. wild shifts on a tiny frame).
+    min_dim = 16
+    if right - left < min_dim or bottom - top < min_dim:
+        return None
+
+    return (left, top, right, bottom)
+
+
 TOPAZ_FFMPEG_PATHS = [
     "/Applications/Topaz Video.app/Contents/MacOS/ffmpeg",
     "/Applications/Topaz Video AI.app/Contents/MacOS/ffmpeg",
@@ -1112,6 +1178,11 @@ class DropLabel(QLabel):
         self.crop_rect = None
         self.crop_button = None
         self.clear_crop_button = None
+        # Automatic offset-based crop computed from alignment shifts. A manual
+        # crop_rect overrides it; the "Auto-crop edges" checkbox disables it.
+        self.auto_crop_rect = None
+        self.auto_crop_enabled = True
+        self.auto_crop_checkbox = None
         self.topaz_available = is_topaz_available()
         
         # Output parameters
@@ -1377,6 +1448,16 @@ class DropLabel(QLabel):
         self.normalize_checkbox.stateChanged.connect(self.toggle_normalize_exposure)
         self.button_layout.addWidget(self.normalize_checkbox)
 
+        # Automatic offset-based crop toggle (removes np.roll wrap bands).
+        self.auto_crop_checkbox = QCheckBox("Auto-crop edges")
+        self.auto_crop_checkbox.setChecked(self.auto_crop_enabled)
+        self.auto_crop_checkbox.setToolTip(
+            "Automatically trim the misaligned edges left by alignment. "
+            "Shown as a dashed box; drawing a manual crop overrides it."
+        )
+        self.auto_crop_checkbox.stateChanged.connect(self.toggle_auto_crop)
+        self.button_layout.addWidget(self.auto_crop_checkbox)
+
         self.crop_button = QPushButton("Set Crop")
         self.crop_button.setCheckable(True)
         self.crop_button.setEnabled(False)
@@ -1438,14 +1519,39 @@ class DropLabel(QLabel):
         self.update()
 
     def clear_export_crop(self):
-        """Clear the export crop rectangle."""
+        """Clear the manual export crop; reverts to the automatic crop if any."""
         self.crop_rect = None
         self.crop_start_pos = None
         self.crop_current_pos = None
         if self.clear_crop_button:
             self.clear_crop_button.setEnabled(False)
-        self.update_status("Crop cleared.")
+        if self.auto_crop_enabled and self.auto_crop_rect:
+            self.update_status("Manual crop cleared — reverted to auto-crop.")
+        else:
+            self.update_status("Crop cleared.")
         self.update()
+
+    def _update_auto_crop(self, shifts):
+        """Recompute the offset-based auto-crop from the latest alignment shifts.
+
+        Always stores the computed rect (regardless of the enabled toggle) so
+        toggling "Auto-crop edges" back on doesn't require a re-alignment;
+        effective_crop_rect and the preview gate on self.auto_crop_enabled."""
+        if self.aligned_frames:
+            self.auto_crop_rect = compute_auto_crop_rect(shifts, self.aligned_frames[0].size)
+        else:
+            self.auto_crop_rect = None
+
+    def effective_crop_rect(self):
+        """The crop actually applied on export (and shown as a preview overlay).
+
+        Precedence: a hand-drawn manual crop wins; otherwise the automatic
+        offset-based crop when enabled; otherwise no crop (full frame)."""
+        if self.crop_rect:
+            return self.crop_rect
+        if self.auto_crop_enabled:
+            return self.auto_crop_rect
+        return None
 
     def get_displayed_pixmap_info(self):
         """Return display and frame geometry for mapping widget points to frame pixels."""
@@ -1520,12 +1626,16 @@ class DropLabel(QLabel):
         return True
 
     def apply_export_crop(self, frames):
-        """Crop export frames before scaling and Topaz processing."""
-        if not self.crop_rect:
+        """Crop export frames before scaling and Topaz processing.
+
+        Uses the manual crop when set, otherwise the automatic offset-based
+        crop (see effective_crop_rect)."""
+        crop_rect = self.effective_crop_rect()
+        if not crop_rect:
             return frames
 
         cropped_frames = []
-        left, top, right, bottom = self.crop_rect
+        left, top, right, bottom = crop_rect
         for frame in frames:
             frame_w, frame_h = frame.size
             safe_left = max(0, min(left, frame_w - 1))
@@ -1569,6 +1679,18 @@ class DropLabel(QLabel):
                 self.setPixmap(self.qpixmaps[self.current_frame_idx % len(self.qpixmaps)])
             self.refresh_frame_strip()
             self.update()
+
+    def toggle_auto_crop(self, state):
+        """Enable/disable the automatic offset-based edge crop."""
+        self.auto_crop_enabled = self.auto_crop_checkbox.isChecked()
+        if self.auto_crop_enabled and self.auto_crop_rect:
+            left, top, right, bottom = self.auto_crop_rect
+            self.update_status(f"Auto-crop on — trimming edges to {right - left}×{bottom - top}.")
+        elif self.auto_crop_enabled:
+            self.update_status("Auto-crop on.")
+        else:
+            self.update_status("Auto-crop off — exporting the full frame.")
+        self.update()
 
     def toggle_pingpong_mode(self, state):
         """Toggle between pingpong (forward-backward) and forward-only animation modes."""
@@ -1874,8 +1996,10 @@ class DropLabel(QLabel):
         except Exception as e:
             print(f"[add_frame_files] Re-alignment failed: {e}")
             aligned = combined
+            shifts = None
         self.frames = combined
         self.aligned_frames = aligned
+        self._update_auto_crop(shifts)
         print(f"[add_frame_files] Now {len(self.aligned_frames)} frames.")
         self.update_status(f"Added {len(new_raw)} frame(s). {len(self.aligned_frames)} frames total.")
         self._rebuild_after_frame_change()
@@ -2075,6 +2199,7 @@ class DropLabel(QLabel):
             # Continue with normal processing
             self.alignment_point = None # Reset alignment point on new image
             self.crop_rect = None
+            self.auto_crop_rect = None  # recomputed once the new frames are aligned
             self.crop_start_pos = None
             self.crop_current_pos = None
             self.crop_mode = False
@@ -2107,6 +2232,7 @@ class DropLabel(QLabel):
             self.frames = []
             self.qpixmaps = []
             self.aligned_frames = []
+            self.auto_crop_rect = None
             self.setText("Drag and drop one or more images here") # Reset text
             self.refresh_frame_strip()
             if self.gif_button: self.gif_button.setEnabled(False)
@@ -2191,6 +2317,7 @@ class DropLabel(QLabel):
                 )
                 shift_strs = [f"[{s[0]:.2f}, {s[1]:.2f}]" for s in shifts if s is not None]
                 print(f"[dropEvent] Auto-alignment complete with shifts: {shift_strs}")
+                self._update_auto_crop(shifts)
                 order_note = (
                     f"Reordered frames to {[i + 1 for i in detected_order]} by detected motion. "
                     if detected_order else ""
@@ -2199,7 +2326,8 @@ class DropLabel(QLabel):
             except Exception as e:
                 print(f"[dropEvent] Auto-alignment failed: {e}")
                 self.aligned_frames = frames  # Use unaligned frames if alignment fails
-                
+                self.auto_crop_rect = None
+
             # Prepare frames for display (scaling, QPixmap conversion, ping-pong)
             print("[dropEvent] Calling prepare_animation_frames...")
             self.prepare_animation_frames()
@@ -2234,6 +2362,7 @@ class DropLabel(QLabel):
             self.frames = []
             self.qpixmaps = []
             self.aligned_frames = []
+            self.auto_crop_rect = None
             self.setText("Drag and drop one or more images here") # Reset text
             self.refresh_frame_strip()
             if self.gif_button: self.gif_button.setEnabled(False)
@@ -2444,6 +2573,7 @@ class DropLabel(QLabel):
                 )
                 
                 shift_strs = [f"[{s[0]:.2f}, {s[1]:.2f}]" for s in shifts if s is not None]
+                self._update_auto_crop(shifts)
                 num_aligned = len(self.aligned_frames)
                 if num_aligned > 0:
                     ref_idx = num_aligned // 2 if num_aligned % 2 == 1 else num_aligned // 2 - 1
@@ -2466,6 +2596,7 @@ class DropLabel(QLabel):
                 print(traceback.format_exc())
                 self.update_status(f"Alignment Error: {e}")
                 self.aligned_frames = self.slice_image()
+                self.auto_crop_rect = None
                 self.prepare_animation_frames()
 
     def load_image_dialog(self):
@@ -2979,6 +3110,19 @@ class DropLabel(QLabel):
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(QColor(255, 220, 80), 3))
             painter.drawRect(crop_widget_rect)
+        elif self.auto_crop_enabled and self.auto_crop_rect:
+            # No manual crop: show the automatic offset-based crop as a distinct
+            # dashed cyan outline (no dimming) so it reads as "suggested".
+            auto_widget_rect = self.frame_rect_to_widget_rect(self.auto_crop_rect)
+            if auto_widget_rect:
+                info = self.get_displayed_pixmap_info()
+                if info:
+                    offset_x, offset_y, pixmap_w, pixmap_h, _, _ = info
+                    image_rect = QRect(int(offset_x), int(offset_y), int(pixmap_w), int(pixmap_h))
+                    auto_widget_rect = auto_widget_rect.intersected(image_rect)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(0, 210, 220), 2, Qt.DashLine))
+                painter.drawRect(auto_widget_rect)
 
         preview_factor = self.get_preview_slowmo_factor()
         if preview_factor > 1:
@@ -3203,10 +3347,12 @@ class DropLabel(QLabel):
                     )
                     shift_strs = [f"[{s[0]:.2f}, {s[1]:.2f}]" for s in shifts if s is not None]
                     print(f"[mouseReleaseEvent] Auto-alignment complete with shifts: {shift_strs}")
+                    self._update_auto_crop(shifts)
                     self.update_status(f"Grid set to {new_cols}x{new_rows} and auto-aligned")
                 except Exception as e:
                     print(f"[mouseReleaseEvent] Auto-alignment failed: {e}")
                     self.aligned_frames = frames  # Use unaligned frames if alignment fails
+                    self.auto_crop_rect = None
                 
                 # Ensure animation frames are properly prepared and displayed
                 self.prepare_animation_frames()
