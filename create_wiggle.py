@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 from skimage.registration import phase_cross_correlation
-from scipy.ndimage import zoom
+from scipy.ndimage import shift as ndi_shift
 
 from PySide6.QtGui import QPainter, QBrush, QPen, QColor, QRadialGradient
 import numpy as np
@@ -92,23 +92,22 @@ def crop_images(image_array, crop_size):
 
 
 def compute_auto_crop_rect(shifts, frame_size, margin=3):
-    """Offset-based crop that removes the np.roll wrap bands left by alignment.
+    """Offset-based crop that removes edge bands left by alignment.
 
-    ``align_frames`` aligns each frame with ``np.roll(frame, int_shift, axis=(0,1))``
-    where ``int_shift`` is ``round(shift)`` and ``shift`` is ``(dy, dx)`` (skimage
-    convention). Because ``np.roll`` wraps rather than translating into empty space,
-    a frame rolled by ``(dy, dx)`` gets a band of wrapped-around garbage:
+    ``align_frames`` aligns each frame by translating it by ``shift`` in
+    ``(dy, dx)`` order (skimage convention). The exposed edge bands are filled
+    rather than wrapped, but they still should be trimmed for export:
 
-        dx > 0 -> left dx cols garbage      dx < 0 -> right |dx| cols garbage
-        dy > 0 -> top dy rows garbage       dy < 0 -> bottom |dy| rows garbage
+        dx > 0 -> left dx cols exposed      dx < 0 -> right |dx| cols exposed
+        dy > 0 -> top dy rows exposed       dy < 0 -> bottom |dy| rows exposed
 
     The clean region common to every frame trims each edge by the worst case
-    across frames (plus a small safety ``margin`` to hide any residual seam).
+    across frames (plus a small safety ``margin`` to hide any residual edge).
 
     Args:
         shifts: list of (dy, dx) array-likes, or None entries (e.g. reference frame).
         frame_size: (width, height) of the aligned frames.
-        margin: extra pixels trimmed per edge beyond the exact wrap width.
+        margin: extra pixels trimmed per edge beyond the exact shift width.
 
     Returns:
         (left, top, right, bottom) in frame pixels, or None when no meaningful
@@ -122,9 +121,8 @@ def compute_auto_crop_rect(shifts, frame_size, margin=3):
     for shift in shifts:
         if shift is None:
             continue
-        # Match align_frames: the applied shift is the rounded integer.
-        dy = int(round(float(shift[0])))
-        dx = int(round(float(shift[1])))
+        dy = int(np.ceil(abs(float(shift[0])))) * (1 if float(shift[0]) > 0 else -1)
+        dx = int(np.ceil(abs(float(shift[1])))) * (1 if float(shift[1]) > 0 else -1)
         max_dx = max(max_dx, dx)
         min_dx = min(min_dx, dx)
         max_dy = max(max_dy, dy)
@@ -600,10 +598,281 @@ def detect_face_weight_point(frame, max_dim=512):
         return None
 
 
+def gray_float(frame_array):
+    arr = np.asarray(frame_array, dtype=np.float32)
+    if arr.ndim == 2:
+        return arr
+    return arr[..., :3].mean(axis=-1)
+
+
+def hanning_window(shape):
+    height, width = shape
+    return np.outer(np.hanning(height), np.hanning(width)).astype(np.float32)
+
+
+def window_for_phase_correlation(gray):
+    gray = np.asarray(gray, dtype=np.float32)
+    centered = gray - float(np.mean(gray))
+    return centered * hanning_window(gray.shape)
+
+
+def phase_shift(reference_gray, moving_gray, upsample_factor=1, overlap_ratio=0.08, disambiguate=True):
+    shift, error, diffphase = phase_cross_correlation(
+        reference_gray,
+        moving_gray,
+        upsample_factor=upsample_factor,
+        disambiguate=disambiguate,
+        overlap_ratio=overlap_ratio,
+    )
+    shift = np.asarray(shift, dtype=np.float32)
+    if not np.all(np.isfinite(shift)):
+        raise ValueError(f"Non-finite shift detected: {shift}")
+    return shift, error, diffphase
+
+
+def shift_with_edge_fill(frame_array, shift):
+    arr = np.asarray(frame_array)
+    shift = np.asarray(shift, dtype=np.float32)
+    if arr.ndim == 2:
+        shifted = ndi_shift(
+            arr.astype(np.float32),
+            shift=(float(shift[0]), float(shift[1])),
+            order=1,
+            mode="nearest",
+            prefilter=False,
+        )
+    else:
+        shifted = ndi_shift(
+            arr.astype(np.float32),
+            shift=(float(shift[0]), float(shift[1]), 0),
+            order=1,
+            mode="nearest",
+            prefilter=False,
+        )
+    return np.clip(shifted, 0, 255).astype(np.uint8)
+
+
+def is_reasonable_shift(shift, shape, min_overlap_ratio=0.08):
+    """Allow large offsets while rejecting shifts with almost no shared image."""
+    shift = np.asarray(shift, dtype=np.float32)
+    if not np.all(np.isfinite(shift)):
+        return False
+    height, width = shape
+    min_overlap_y = max(12, int(round(height * min_overlap_ratio)))
+    min_overlap_x = max(12, int(round(width * min_overlap_ratio)))
+    return (
+        abs(float(shift[0])) <= max(0, height - min_overlap_y)
+        and abs(float(shift[1])) <= max(0, width - min_overlap_x)
+    )
+
+
+def estimate_feature_shift(reference_gray, moving_gray, max_dim=1200):
+    """Estimate moving->reference translation from local feature matches.
+
+    Phase correlation assumes the whole frame is one shifted image. Close stereo
+    pairs violate that: foreground and background have different disparities.
+    Feature matches let us find the dominant object plane and are a useful
+    fallback when phase correlation locks onto repeated texture or background.
+    """
+    try:
+        import cv2
+    except Exception as e:
+        print(f"[feature_shift] OpenCV unavailable: {e}")
+        return None, None
+
+    ref = np.asarray(reference_gray, dtype=np.float32)
+    moving = np.asarray(moving_gray, dtype=np.float32)
+    if ref.ndim != 2 or moving.ndim != 2:
+        return None, None
+
+    max_side = max(ref.shape + moving.shape)
+    scale = min(1.0, max_dim / max_side)
+
+    def prep(gray):
+        arr = gray
+        if scale < 1.0:
+            size = (max(2, round(arr.shape[1] * scale)), max(2, round(arr.shape[0] * scale)))
+            arr = cv2.resize(arr, size, interpolation=cv2.INTER_AREA)
+        lo, hi = np.percentile(arr, (1, 99))
+        if hi <= lo:
+            return None
+        arr = np.clip((arr - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+        return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(arr)
+
+    ref_u8 = prep(ref)
+    moving_u8 = prep(moving)
+    if ref_u8 is None or moving_u8 is None:
+        return None, None
+
+    use_sift = hasattr(cv2, "SIFT_create")
+    if use_sift:
+        detector = cv2.SIFT_create(nfeatures=3500)
+        norm = cv2.NORM_L2
+    else:
+        detector = cv2.ORB_create(nfeatures=5000)
+        norm = cv2.NORM_HAMMING
+
+    ref_kp, ref_desc = detector.detectAndCompute(ref_u8, None)
+    moving_kp, moving_desc = detector.detectAndCompute(moving_u8, None)
+    if ref_desc is None or moving_desc is None or len(ref_kp) < 8 or len(moving_kp) < 8:
+        return None, None
+
+    if use_sift:
+        matcher = cv2.BFMatcher(norm)
+        raw_matches = matcher.knnMatch(moving_desc, ref_desc, k=2)
+        matches = [m for m, n in raw_matches if m.distance < 0.75 * n.distance]
+    else:
+        matcher = cv2.BFMatcher(norm, crossCheck=True)
+        matches = sorted(matcher.match(moving_desc, ref_desc), key=lambda m: m.distance)[:1000]
+
+    if len(matches) < 12:
+        return None, None
+
+    moving_pts = np.float32([moving_kp[m.queryIdx].pt for m in matches])
+    ref_pts = np.float32([ref_kp[m.trainIdx].pt for m in matches])
+    _, inliers = cv2.estimateAffinePartial2D(
+        moving_pts,
+        ref_pts,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=4,
+        confidence=0.99,
+        maxIters=5000,
+    )
+    if inliers is None:
+        return None, None
+
+    keep = inliers.ravel().astype(bool)
+    if int(keep.sum()) < 12:
+        return None, None
+
+    deltas = (ref_pts[keep] - moving_pts[keep]) / scale
+    median_dx, median_dy = np.median(deltas, axis=0)
+    residuals = np.linalg.norm(deltas - np.median(deltas, axis=0), axis=1)
+    median_residual = float(np.median(residuals))
+    confidence = {
+        "matches": len(matches),
+        "inliers": int(keep.sum()),
+        "median_residual": median_residual,
+    }
+    if median_residual > max(12.0, 0.025 * min(ref.shape)):
+        return None, confidence
+
+    return np.array([median_dy, median_dx], dtype=np.float32), confidence
+
+
+def estimate_fft_frame_count(image, max_cols=12):
+    """Old brightness-period heuristic, clipped to a plausible grid count."""
+    image_gray = image.convert('L')
+    image_array = np.array(image_gray)
+    x_signal = np.mean(image_array, axis=0)
+    fft_vals = np.abs(np.fft.rfft(x_signal))
+    fft_vals[0] = 0
+    if len(fft_vals) <= 1:
+        return 1
+    max_idx = min(max_cols, len(fft_vals) - 1)
+    peak_index = int(np.argmax(fft_vals[1:max_idx + 1])) + 1
+    return max(1, peak_index)
+
+
+def score_horizontal_frame_count(image, cols, feature_max_dim=800):
+    width, height = image.size
+    if cols < 2 or width // cols < 128:
+        return None
+
+    frame_width = width // cols
+    frames = []
+    for col in range(cols):
+        left = col * frame_width
+        right = width if col == cols - 1 else left + frame_width
+        frames.append(image.crop((left, 0, right, height)).convert('RGB'))
+
+    pair_scores = []
+    pair_details = []
+    for left_frame, right_frame in zip(frames, frames[1:]):
+        left_gray = gray_float(np.asarray(left_frame))
+        right_gray = gray_float(np.asarray(right_frame))
+        shift, conf = estimate_feature_shift(left_gray, right_gray, max_dim=feature_max_dim)
+        if shift is None or conf is None:
+            pair_scores.append(0.0)
+            pair_details.append({"shift": None, "confidence": conf})
+            continue
+
+        inliers = conf.get("inliers", 0)
+        residual = conf.get("median_residual", 999.0)
+        dy, dx = float(shift[0]), float(shift[1])
+        plausible = (
+            abs(dx) <= max(24.0, frame_width * 0.75)
+            and abs(dy) <= max(24.0, height * 0.25)
+            and inliers >= 12
+            and residual <= max(20.0, min(frame_width, height) * 0.05)
+        )
+        if plausible:
+            score = inliers / max(8.0, residual + 4.0)
+        else:
+            score = 0.0
+        pair_scores.append(float(score))
+        pair_details.append({"shift": shift, "confidence": conf})
+
+    coverage = sum(score > 0 for score in pair_scores) / max(1, len(pair_scores))
+    if not pair_scores:
+        return None
+    score = float(np.median(pair_scores) * coverage)
+    # Slightly prefer simpler grids when scores are similar.
+    score -= cols * 0.05
+    return {
+        "cols": cols,
+        "score": score,
+        "coverage": coverage,
+        "pairs": pair_details,
+    }
+
+
+def detect_horizontal_frame_count(image, max_cols=8):
+    """Choose a horizontal frame count by scoring candidate split matches.
+
+    This is more robust than FFT for close stereo pairs because it asks:
+    "if I split here, do adjacent frames contain coherent matched features?"
+    """
+    width, _ = image.size
+    max_cols = max(2, min(max_cols, width // 128))
+    candidates = []
+    for cols in range(2, max_cols + 1):
+        result = score_horizontal_frame_count(image, cols)
+        if result is not None:
+            candidates.append(result)
+
+    viable = [c for c in candidates if c["coverage"] >= 0.6 and c["score"] >= 3.0]
+    if viable:
+        viable.sort(key=lambda c: (c["score"], -c["cols"]), reverse=True)
+        best = viable[0]
+        runner_up = viable[1] if len(viable) > 1 else None
+        if runner_up is None or best["score"] >= runner_up["score"] * 1.25:
+            print(
+                f"[detect_frame_count] Feature split chose {best['cols']} cols "
+                f"(score {best['score']:.2f}, coverage {best['coverage']:.2f})."
+            )
+            return best["cols"], "features", candidates
+
+    fft_cols = estimate_fft_frame_count(image, max_cols=max_cols)
+    print(
+        f"[detect_frame_count] Feature split inconclusive; using FFT cols={fft_cols}. "
+        f"Candidate scores={[(c['cols'], round(c['score'], 2), round(c['coverage'], 2)) for c in candidates]}"
+    )
+    return fft_cols, "fft", candidates
+
+
+def resolve_reference_weight_point(weight_points, ref_idx):
+    if not weight_points:
+        return None
+    if ref_idx < len(weight_points) and weight_points[ref_idx] is not None:
+        return weight_points[ref_idx]
+    for point in weight_points:
+        if point is not None:
+            return point
+    return None
+
+
 def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1, sigma=50, power=None, base=None):
-    import math
-    import numpy as np
-    
     # Convert all frames to numpy arrays for processing
     frame_arrays = [np.array(frame) for frame in frames]
     actual_frames = len(frame_arrays)
@@ -629,7 +898,8 @@ def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1,
     shifts[ref_idx] = np.array([0.0, 0.0])
     
     # Get reference frame in grayscale
-    ref_gray = reference_frame.mean(axis=-1)
+    ref_gray = gray_float(reference_frame)
+    windowed_ref_gray = window_for_phase_correlation(ref_gray)
     
     # Define a Gaussian mask function with stronger weighting
     # Use provided power and base if available, otherwise use defaults
@@ -647,8 +917,8 @@ def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1,
     
     # Apply weight mask to reference frame if provided
     mask = None
-    if weight_points is not None and len(weight_points) > 0 and weight_points[0] is not None:
-        wp_ref = weight_points[0]
+    wp_ref = resolve_reference_weight_point(weight_points, ref_idx)
+    if wp_ref is not None:
         print(f"[align_frames] Applying weight mask centered at {wp_ref} with sigma {sigma}, power {mask_power}, base {mask_base}")
         
         # Create a focused mask for point-specific alignment
@@ -671,7 +941,6 @@ def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1,
                 debug_mask.save(os.path.join(debug_path, "weight_mask.png"))
     else:
         print("[align_frames] No weight point provided, using full frame for alignment")
-        masked_ref_gray = ref_gray
     
     # Process each frame for alignment (except reference frame)
     for i in range(actual_frames):
@@ -679,66 +948,80 @@ def align_frames(frames, weight_points=None, debug_path=None, upsample_factor=1,
             continue  # Skip reference frame (already handled)
             
         # Get current frame in grayscale
-        frame_gray = frame_arrays[i].mean(axis=-1)
-        
-        # Apply same weight mask to current frame if provided
-        if mask is not None:
-            # Check if mask and frame have different shapes
-            if mask.shape != frame_gray.shape:
-                print(f"Frame {i}: Resizing mask from {mask.shape} to {frame_gray.shape}")
-                # Resize mask to match frame dimensions
-                # Calculate zoom factors for each dimension
-                zoom_y = frame_gray.shape[0] / mask.shape[0]
-                zoom_x = frame_gray.shape[1] / mask.shape[1]
-                
-                # Resize the mask using zoom
-                resized_mask = zoom(mask, (zoom_y, zoom_x), order=1)
-                
-                # Use squared resized mask for even more extreme weighting
-                masked_frame_gray = frame_gray * (resized_mask * resized_mask)
-            else:
-                # Use squared mask for even more extreme weighting
-                masked_frame_gray = frame_gray * (mask * mask)
-        else:
-            masked_frame_gray = frame_gray
+        frame_gray = gray_float(frame_arrays[i])
         
         # Check if frames have the same shape before alignment
-        if masked_ref_gray.shape != masked_frame_gray.shape:
-            print(f"Frame {i}: Shape mismatch - reference: {masked_ref_gray.shape}, current: {masked_frame_gray.shape}")
+        if ref_gray.shape != frame_gray.shape:
+            print(f"Frame {i}: Shape mismatch - reference: {ref_gray.shape}, current: {frame_gray.shape}")
             print(f"Frame {i}: Resizing current frame to match reference")
             # Resize current frame to match reference frame
             from skimage.transform import resize
-            masked_frame_gray = resize(masked_frame_gray, masked_ref_gray.shape, mode='reflect', anti_aliasing=True)
+            frame_gray = resize(frame_gray, ref_gray.shape, mode='reflect', anti_aliasing=True)
             
         # Calculate shift using phase cross-correlation
         try:
-            # Use a higher upsample_factor for more precise alignment
-            shift, error, diffphase = phase_cross_correlation(
-                masked_ref_gray,
-                masked_frame_gray,
-                upsample_factor=upsample_factor
+            # First solve the whole-frame translation with a Hanning window. This
+            # keeps large offsets visible even when point weighting is enabled.
+            coarse_shift, coarse_error, _ = phase_shift(
+                windowed_ref_gray,
+                window_for_phase_correlation(frame_gray),
+                upsample_factor=max(1, min(upsample_factor, 4)),
+                overlap_ratio=0.08,
+                disambiguate=True,
             )
-            
-            # Add sanity check for extreme shift values
-            max_reasonable_shift = min(masked_ref_gray.shape) // 4  # Limit to 1/4 of the smallest dimension
-            if np.any(np.abs(shift) > max_reasonable_shift):
-                print(f"Frame {i}: WARNING - Extreme shift detected: {shift}")
-                print(f"Frame {i}: Clamping shift values to range [-{max_reasonable_shift}, {max_reasonable_shift}]")
-                shift = np.clip(shift, -max_reasonable_shift, max_reasonable_shift)
+
+            if not is_reasonable_shift(coarse_shift, ref_gray.shape):
+                print(f"Frame {i}: WARNING - unreasonable coarse shift detected: {coarse_shift}; using no shift")
+                coarse_shift = np.array([0.0, 0.0], dtype=np.float32)
+
+            feature_shift, feature_conf = estimate_feature_shift(ref_gray, frame_gray)
+            if feature_conf is not None:
+                print(f"Frame {i}: feature shift={feature_shift}, confidence={feature_conf}")
+            used_feature_shift = False
+            if feature_shift is not None and is_reasonable_shift(feature_shift, ref_gray.shape):
+                disagreement = float(np.linalg.norm(feature_shift - coarse_shift))
+                if disagreement > 12.0:
+                    print(
+                        f"Frame {i}: replacing phase shift {coarse_shift} with "
+                        f"feature shift {feature_shift} (disagreement {disagreement:.1f}px)"
+                    )
+                    coarse_shift = feature_shift
+                    used_feature_shift = True
+
+            shift = coarse_shift
+
+            if mask is not None:
+                coarse_aligned_gray = shift_with_edge_fill(frame_gray, coarse_shift)
+                refined_shift, refined_error, _ = phase_shift(
+                    masked_ref_gray,
+                    gray_float(coarse_aligned_gray) * (mask * mask),
+                    upsample_factor=upsample_factor,
+                    overlap_ratio=0.08,
+                    disambiguate=False,
+                )
+                max_refine = max(4.0, min(ref_gray.shape) * 0.2)
+                if used_feature_shift:
+                    max_refine = min(max_refine, 60.0)
+                if np.all(np.abs(refined_shift) <= max_refine):
+                    shift = coarse_shift + refined_shift
+                    print(
+                        f"Frame {i}: coarse shift={coarse_shift}, refined by {refined_shift}, "
+                        f"errors=({coarse_error:.4f}, {refined_error:.4f})"
+                    )
+                else:
+                    print(f"Frame {i}: ignoring large refinement {refined_shift}; using coarse shift {coarse_shift}")
+            else:
+                print(f"Frame {i}: coarse shift={coarse_shift}, error={coarse_error:.4f}")
+
+            if not is_reasonable_shift(shift, ref_gray.shape):
+                print(f"Frame {i}: WARNING - unreasonable final shift detected: {shift}; using coarse shift {coarse_shift}")
+                shift = coarse_shift
             
             # Store the exact float shift
             shifts[i] = shift
             
-            # Apply the exact float shift for subpixel precision
-            # First, round to the nearest integer for the main shift
-            int_shift = np.round(shift).astype(int)
-            
-            # The issue might be in how np.roll is applying the shift
-            # np.roll expects shift in the order (y-shift, x-shift) for axis=(0, 1)
-            aligned_array = np.roll(frame_arrays[i], int_shift, axis=(0, 1))
-
-            # For point-specific alignment, we'll skip the subpixel precision to improve performance
-            # The integer-based alignment should be sufficient with the stronger weighting
+            # Translate without wrapping opposite-edge pixels into the frame.
+            aligned_array = shift_with_edge_fill(frame_arrays[i], shift)
             
             aligned_frames[i] = Image.fromarray(np.uint8(aligned_array))
         except Exception as e:
@@ -904,12 +1187,7 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
                         print(f"Fine-tuning frame {i}: dx={dx}, dy={dy}")
                         print(f"Fine-tuning frame {i}: ref_point={ref_point}, shifted_point=({shifted_point_x}, {shifted_point_y})")
                         
-                        # Based on our diagnostic tests, we need to swap dx and dy for np.roll
-                        # to avoid diagonal shifts
-                        arr = np.array(frame)
-                        
-                        # Swap the order of dx and dy for np.roll
-                        arr = np.roll(arr, shift=(dx, dy), axis=(0, 1))  # Swapped from (dy, dx)
+                        arr = shift_with_edge_fill(frame, (dy, dx))
                         
                         # Save the result for debugging
                         if debug_path:
@@ -918,7 +1196,7 @@ def slice_and_create_gif(input_path, output_gif_path, weight_point=None, debug=F
                                 os.path.join(debug_path, f"finetuned_frame_{i}.png"))
                         
                         # DEBUG: Verify the shift was applied correctly
-                        print(f"Fine-tuning frame {i}: Applied swapped shift (dx={dx}, dy={dy})")
+                        print(f"Fine-tuning frame {i}: Applied shift (dx={dx}, dy={dy})")
                         frame = Image.fromarray(np.uint8(arr))
                 
                 new_frames.append(frame)
@@ -1218,7 +1496,7 @@ class DropLabel(QLabel):
                 self.fps_combo.currentIndexChanged.connect(self.update_output_parameters)
 
     def slice_image(self):
-        """Slices the loaded image into vertical slices based on FFT-determined period in the x direction or user override."""
+        """Slice the loaded image into a horizontal frame strip."""
         if not self.image:
             return []
         
@@ -1238,20 +1516,13 @@ class DropLabel(QLabel):
             print(f"[slice_image] Using manual override: cols={grid_cols}, rows={grid_rows}")
         else:
             try:
-                import numpy as np
-                image_gray = self.image.convert('L')
-                image_array = np.array(image_gray)
-                x_signal = np.mean(image_array, axis=0)
-                fft_vals = np.abs(np.fft.rfft(x_signal))
-                fft_vals[0] = 0
-                peak_index = int(np.argmax(fft_vals))
-                grid_cols = max(1, peak_index)
+                grid_cols, source, _ = detect_horizontal_frame_count(self.image)
                 self.grid_cols = grid_cols
                 self.grid_rows = 1
                 grid_rows = 1
-                print(f"[slice_image] Using FFT: cols={grid_cols}, rows=1")
+                print(f"[slice_image] Auto-detected via {source}: cols={grid_cols}, rows=1")
             except Exception as e:
-                print(f"FFT based slicing failed: {e}")
+                print(f"Auto frame-count detection failed: {e}")
                 grid_cols = 3
                 self.grid_cols = grid_cols
                 self.grid_rows = 1
@@ -1448,7 +1719,7 @@ class DropLabel(QLabel):
         self.normalize_checkbox.stateChanged.connect(self.toggle_normalize_exposure)
         self.button_layout.addWidget(self.normalize_checkbox)
 
-        # Automatic offset-based crop toggle (removes np.roll wrap bands).
+        # Automatic offset-based crop toggle (removes alignment edge bands).
         self.auto_crop_checkbox = QCheckBox("Auto-crop edges")
         self.auto_crop_checkbox.setChecked(self.auto_crop_enabled)
         self.auto_crop_checkbox.setToolTip(
